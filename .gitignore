@@ -1,0 +1,55 @@
+# ── AgentForge internal dev notes (never publish) ────────────────────────
+.agentforge/
+AUDIT.md
+IMPROVEMENT_PLAN.md
+IMPROVEMENT_PROPOSALS.md
+AGENTFORGE.md
+GO_TO_MARKET.md
+
+# ── Secrets ───────────────────────────────────────────────────────────────
+.env.local
+.env
+*.env
+
+# ── Python ────────────────────────────────────────────────────────────────
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+agentforge.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# ── Node / frontend build ─────────────────────────────────────────────────
+node_modules/
+dist/
+.next/
+build/
+
+# ── OS ────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Editor / IDE ──────────────────────────────────────────────────────────
+.claude/
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Agent-generated artifacts (bad runs, landed in wrong dir) ─────────────
+# These are outputs from test runs before workspace sandboxing was added.
+# Real generated code goes to ~/agentforge_projects/ — never the source tree.
+existing/
+relative/
+src/calculator.py
+src/compatibility.py
+src/user_profile.py
+src/cli.py
+src/cli/calculator.py
+tests/test_calculator.py
+tests/test_compatibility.py

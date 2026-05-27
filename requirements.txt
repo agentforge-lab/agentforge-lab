@@ -1,0 +1,49 @@
+# ── Core (install now) ─────────────────────────────────────────────────────
+
+# Agent orchestration — langgraph pulls langchain-core as a compatible dep
+langgraph>=0.4.0
+langchain-anthropic>=0.3.0
+
+# LLM routing (local Ollama + cloud API via one interface)
+litellm>=1.50.0
+
+# Anthropic SDK
+anthropic>=0.40.0
+
+# Hardware detection
+psutil>=6.0.0
+py-cpuinfo>=9.0.0
+
+# Environment management
+python-dotenv>=1.0.0
+
+# CLI
+click>=8.1.0
+
+# Testing
+pytest>=9.0.0
+
+# Token counting
+tiktoken>=0.8.0
+
+# Git operations
+gitpython>=3.1.40
+
+# ── Phase 2: Decision Graph UI ────────────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+websockets>=13.0
+
+# ── Phase 3+ (install when needed, have complex native deps) ──────────────
+# Vector search
+# chromadb>=0.5.0
+
+# Security scanning — large, install separately: pip install bandit semgrep
+# bandit>=1.8.0
+# semgrep>=1.90.0
+
+# Dependency auditing
+# pip-audit>=2.7.0
+
+# Web research (Phase 6)
+# tavily-python>=0.5.0
