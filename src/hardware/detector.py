@@ -120,7 +120,7 @@ def _route_model(vram_gb: float, is_apple_silicon: bool, ram_gb: float) -> tuple
     elif effective_vram >= 16:
         return "qwen2.5-coder:14b", "claude-sonnet-4-6", note or "16GB VRAM: 14B model local"
     elif effective_vram >= 8:
-        return "qwen2.5-coder:7b", "claude-haiku-4-5-20251001", note or "8GB VRAM: 7B model local"
+        return "qwen2.5-coder:1.5b", "claude-haiku-4-5-20251001", note or "8GB VRAM: 1.5B model local"
     elif effective_vram >= 4:
         return "qwen2.5-coder:3b", "claude-haiku-4-5-20251001", note or "4GB VRAM: 3B model local"
     else:

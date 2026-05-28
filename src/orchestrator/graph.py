@@ -262,11 +262,24 @@ def make_developer_node(bundle: AgentBundle):
             security_issues = state.get("security_blocking", [])
 
             if test_output and not state.get("tests_passed"):
-                retry_reason = "test failures"
-                context["previous_error"] = (
-                    f"Tests failed on attempt {retry}. Full pytest output:\n\n"
-                    + test_output[:2500]
-                )
+                if "ZERO TESTS COLLECTED" in test_output:
+                    # Tester wrote tests but found nothing testable (all main()/argparse/IO)
+                    retry_reason = "no testable functions"
+                    context["previous_error"] = test_output
+                elif "ImportError" in test_output or "ModuleNotFoundError" in test_output:
+                    retry_reason = "import error in tests"
+                    context["previous_error"] = (
+                        f"Test collection failed on attempt {retry} — your code has an import error.\n"
+                        "Fix the source file imports so the test file can import them.\n"
+                        "Keep the solution to a SINGLE file at the project root (e.g. cli.py).\n\n"
+                        + test_output[:2000]
+                    )
+                else:
+                    retry_reason = "test failures"
+                    context["previous_error"] = (
+                        f"Tests failed on attempt {retry}. Full pytest output:\n\n"
+                        + test_output[:2500]
+                    )
             elif exec_output and not state.get("exec_passed"):
                 retry_reason = "syntax error"
                 context["previous_error"] = (
@@ -371,6 +384,10 @@ def make_tester_node(bundle: AgentBundle):
                 continue
             if "tests/" in rel_path or "tests\\" in rel_path:
                 continue
+            # Only test root-level files; utility/helper submodules are tested
+            # indirectly and their import chains cause collection errors.
+            if "/" in rel_path or "\\" in rel_path:
+                continue
             abs_path = bundle.working_dir / rel_path
             if abs_path.exists():
                 source_files[rel_path] = abs_path.read_text()
@@ -385,6 +402,22 @@ def make_tester_node(bundle: AgentBundle):
             }
 
         result = bundle.tester.test_edits(source_files, state.get("task_description", ""))
+
+        # When tests were written but nothing ran, the source has no testable public
+        # functions (all main()/argparse/IO). Give the developer concrete guidance
+        # instead of an empty output that provides no signal.
+        if result.total == 0 and result.wrote_tests:
+            source_names = ", ".join(source_files.keys())
+            zero_msg = (
+                f"ZERO TESTS COLLECTED — {source_names} has no testable public functions.\n"
+                "The tester correctly skipped main() (calls argparse) and I/O-only functions.\n\n"
+                "FIX: Extract core logic into a pure function that returns a value:\n"
+                "  WRONG: def main(): parse args, do everything, print result\n"
+                "  RIGHT: def generate_password(length=12): return ...  ← testable\n"
+                "         def main(): print(generate_password(...))\n\n"
+                "One root-level .py file with at least one public function besides main()."
+            )
+            result.raw_output = zero_msg
 
         failures = [
             {"test_name": f.test_name, "error": f.error}
@@ -495,7 +528,7 @@ def make_git_node(bundle: AgentBundle):
                 "session_log": _log(state, f"git_manager: branch failed — {br.message}"),
             }
 
-        # Stage changed files
+        # Stage developer-written files
         if paths:
             stage = bundle.git_manager.stage_files(paths)
             if not stage.success:
@@ -504,6 +537,16 @@ def make_git_node(bundle: AgentBundle):
                     "complete": True,
                     "session_log": _log(state, f"git_manager: stage failed — {stage.message}"),
                 }
+
+        # Also stage any tester-generated test files (not in edited_file_paths)
+        tests_dir = bundle.working_dir / "tests"
+        if tests_dir.exists():
+            test_files = [
+                str(f.relative_to(bundle.working_dir))
+                for f in tests_dir.rglob("test_*.py")
+            ]
+            if test_files:
+                bundle.git_manager.stage_files(test_files)
 
         # Commit
         body = f"Goal: {state['goal']}\nFiles: {', '.join(paths)}"

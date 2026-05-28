@@ -298,6 +298,44 @@ THIRD_PARTY_PATTERNS: dict[str, str] = {
 }
 
 
+# ── Stdlib import auto-fixer ──────────────────────────────────────────────
+
+_STDLIB_MODULES = frozenset({
+    "string", "os", "re", "sys", "random", "math", "json",
+    "collections", "itertools", "functools", "datetime", "pathlib",
+    "typing", "time", "hashlib", "base64", "uuid", "argparse",
+})
+
+
+def _fix_missing_imports(code: str) -> str:
+    """Auto-add stdlib imports that are used (as `module.X`) but not imported."""
+    existing: set[str] = set()
+    for line in code.splitlines():
+        m = re.match(r"^import\s+(\w+)", line)
+        if m:
+            existing.add(m.group(1))
+        m = re.match(r"^from\s+(\w+)\s+import", line)
+        if m:
+            existing.add(m.group(1))
+
+    needed = sorted(
+        mod for mod in _STDLIB_MODULES
+        if f"{mod}." in code and mod not in existing
+    )
+    if not needed:
+        return code
+
+    lines = code.splitlines()
+    last_import = -1
+    for i, line in enumerate(lines):
+        if line.startswith("import ") or line.startswith("from "):
+            last_import = i
+    insert_at = last_import + 1 if last_import >= 0 else 0
+    for offset, mod in enumerate(needed):
+        lines.insert(insert_at + offset, f"import {mod}")
+    return "\n".join(lines)
+
+
 # ── Agent ──────────────────────────────────────────────────────────────────
 
 class DeveloperAgent:
@@ -441,9 +479,14 @@ class DeveloperAgent:
                 suffix = "\n# ... (truncated)" if len(content) > 6000 else ""
                 parts.append(f"## Existing file: {path}\n```\n{truncated}{suffix}\n```")
         if context.get("previous_error"):
-            # Summarise to first 3 lines to avoid context bloat on retries
-            err_lines = context["previous_error"].splitlines()[:5]
-            parts.append(f"## Previous error\n{chr(10).join(err_lines)}")
+            err_text = context["previous_error"]
+            if "ZERO TESTS COLLECTED" in err_text:
+                # Send in full — the message contains fix instructions the model must follow
+                parts.append(f"## Previous error\n{err_text}")
+            else:
+                # Truncate long pytest output to avoid context bloat
+                err_lines = err_text.splitlines()[:8]
+                parts.append(f"## Previous error\n{chr(10).join(err_lines)}")
         parts.append(f"## Task\n{task}")
         return "\n\n".join(parts)
 
@@ -453,12 +496,12 @@ class DeveloperAgent:
         """Write edits to disk. Called automatically by execute()."""
         for edit in edits:
             path = self.working_dir / edit.file_path
-            if edit.operation == "create":
+            if edit.operation in ("create", "edit"):
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(edit.content or "")
-            elif edit.operation == "edit":
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(edit.content or "")
+                content = edit.content or ""
+                if edit.file_path.endswith(".py"):
+                    content = _fix_missing_imports(content)
+                path.write_text(content)
             elif edit.operation == "delete":
                 if path.exists():
                     path.unlink()

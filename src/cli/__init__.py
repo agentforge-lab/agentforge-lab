@@ -16,6 +16,10 @@ import click
 
 from src.hardware.detector import detect_hardware, write_hardware_profile
 from src.agents.planner import PlannerAgent
+from src.llm.model_config import (
+    AgentModelConfig, detect_ollama_models, load_model_config,
+    save_model_config, suggest_config,
+)
 from src.orchestrator.runner import AgentForgeRunner, RunResult
 
 # ── helpers ────────────────────────────────────────────────────────────────
@@ -232,3 +236,92 @@ def status(working_dir):
             click.echo("\n  No session summaries yet.")
     else:
         click.echo("\n  No session summaries directory found.")
+
+
+# ── models ─────────────────────────────────────────────────────────────────
+
+@cli.group()
+def models():
+    """Configure which model each agent uses."""
+
+
+@models.command("list")
+def models_list():
+    """Show the current per-agent model configuration."""
+    from src.llm.model_config import _GLOBAL_CONFIG, _PROJECT_CONFIG
+    cfg = load_model_config()
+    click.echo(f"\n{cfg.display()}")
+    click.echo()
+    if _PROJECT_CONFIG.exists():
+        click.echo(f"  Source: {_PROJECT_CONFIG} (project)")
+    elif _GLOBAL_CONFIG.exists():
+        click.echo(f"  Source: {_GLOBAL_CONFIG} (global)")
+    else:
+        click.echo("  Source: built-in defaults (no config file found)")
+    click.echo()
+    click.echo("  To change: agentforge models set <agent> <model>")
+    click.echo("  To detect: agentforge models detect")
+
+
+@models.command("set")
+@click.argument("agent", type=click.Choice(["planner", "developer", "tester", "default"]))
+@click.argument("model")
+@click.option("--project", is_flag=True, default=False,
+              help="Save to project (.agentforge/) instead of global (~/.agentforge/).")
+def models_set(agent, model, project):
+    """
+    Set the model for AGENT.
+
+    \b
+    Examples:
+      agentforge models set developer qwen2.5-coder:7b
+      agentforge models set planner llama3.1:8b
+      agentforge models set tester qwen2.5-coder:1.5b
+      agentforge models set developer claude-haiku-4-5-20251001
+    """
+    cfg = load_model_config()
+    setattr(cfg, agent, model)
+    path = save_model_config(cfg, global_scope=not project)
+    scope = "project" if project else "global"
+    click.echo(f"\n  {agent} → {model}  (saved to {scope} config: {path})")
+    click.echo()
+    click.echo(cfg.display())
+
+
+@models.command("detect")
+@click.option("--save", is_flag=True, default=False,
+              help="Save the suggested config without prompting.")
+def models_detect(save):
+    """
+    Query Ollama for installed models and suggest a per-agent configuration.
+
+    The suggestion assigns your largest/best model to developer + planner,
+    and the smallest to tester (which is less critical and saves VRAM).
+    """
+    click.echo("\n  Querying Ollama for installed models...")
+    available = detect_ollama_models()
+
+    if not available:
+        click.echo("  Ollama is not running or has no models installed.")
+        click.echo("  Start it with: ollama serve")
+        click.echo("  Pull a model:  ollama pull qwen2.5-coder:1.5b")
+        return
+
+    click.echo(f"\n  Found {len(available)} model(s):")
+    for m in available:
+        click.echo(f"    - {m}")
+
+    suggested = suggest_config(available)
+    click.echo(f"\n  Suggested configuration:")
+    click.echo(f"  {suggested.display()}")
+    click.echo()
+
+    if save:
+        path = save_model_config(suggested)
+        click.echo(f"  Saved to: {path}")
+    else:
+        if click.confirm("  Save this configuration?"):
+            path = save_model_config(suggested)
+            click.echo(f"  Saved to: {path}")
+        else:
+            click.echo("  Not saved. Run with --save to skip the prompt.")

@@ -19,6 +19,7 @@ from src.agents.planner import PlannerAgent
 from src.agents.security import SecurityAgent
 from src.agents.tester import TesterAgent
 from src.llm.client import LLMClient
+from src.llm.model_config import load_model_config, make_llm_client
 from src.orchestrator.graph import AgentBundle, build_graph, default_state
 
 
@@ -135,11 +136,20 @@ class AgentForgeRunner:
     # ── Internal ──────────────────────────────────────────────────────────
 
     def _build_bundle(self, goal: str = "") -> AgentBundle:
+        if self.llm is not None:
+            # Explicit LLM passed in (e.g. from tests) — use it for all agents
+            planner_llm = developer_llm = tester_llm = self.llm
+        else:
+            cfg = load_model_config()
+            planner_llm   = make_llm_client(cfg.for_agent("planner"))
+            developer_llm = make_llm_client(cfg.for_agent("developer"))
+            tester_llm    = make_llm_client(cfg.for_agent("tester"))
+
         return AgentBundle(
-            planner=PlannerAgent(llm_client=self.llm),
-            developer=DeveloperAgent(llm=self.llm, working_dir=self.working_dir, goal=goal),
+            planner=PlannerAgent(llm_client=planner_llm),
+            developer=DeveloperAgent(llm=developer_llm, working_dir=self.working_dir, goal=goal),
             executor=ExecutorAgent(working_dir=self.working_dir),
-            tester=TesterAgent(llm=self.llm, working_dir=self.working_dir),
+            tester=TesterAgent(llm=tester_llm, working_dir=self.working_dir),
             security=SecurityAgent(working_dir=self.working_dir),
             git_manager=GitManagerAgent(working_dir=self.working_dir),
             auto_approve=self.auto_approve,

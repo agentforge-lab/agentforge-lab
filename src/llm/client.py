@@ -1,7 +1,7 @@
 """
 LLM client — unified interface for Ollama (local) and Anthropic API.
 Uses LiteLLM to route between backends transparently.
-Default: ollama/qwen2.5-coder:7b — works with zero API key or cost.
+Default: ollama/qwen2.5-coder:1.5b — works with zero API key or cost.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ class LLMClient:
 
     def __init__(
         self,
-        local_model: str = "qwen2.5-coder:7b",
+        local_model: str = "qwen2.5-coder:1.5b",
         api_model: str = "claude-haiku-4-5-20251001",
         prefer_local: bool = True,
     ):
@@ -157,7 +157,7 @@ class LLMClient:
     @classmethod
     def from_hardware_profile(cls, profile_path: Path = Path(".agentforge/hardware_profile.md")) -> "LLMClient":
         """Build a client pre-configured from the detected hardware profile."""
-        local_model = "qwen2.5-coder:7b"  # default
+        local_model = "qwen2.5-coder:1.5b"  # default
         api_model = "claude-haiku-4-5-20251001"
 
         if profile_path.exists():
