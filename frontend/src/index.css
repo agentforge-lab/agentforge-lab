@@ -252,6 +252,37 @@ button    { cursor: pointer; font-family: inherit; }
 }
 .btn-cancel:hover { border-color: #64748b; color: #cbd5e1; }
 
+/* planning loading state */
+.plan-loading {
+  border-color: var(--blue-dim);
+  background: linear-gradient(135deg, #080E18, #0a1628);
+}
+.plan-loading-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 12px 0;
+}
+.plan-loading-step {
+  font-size: 0.82rem;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-family: monospace;
+}
+.plan-step-active {
+  color: var(--green);
+  background: var(--green-dim);
+}
+.plan-step-pending {
+  color: var(--text-3);
+  background: rgba(255,255,255,0.02);
+}
+.plan-loading-note {
+  font-size: 0.75rem;
+  color: var(--text-3);
+  margin-top: 8px;
+}
+
 /* plan brief in NodeDetail */
 .plan-brief-detail {
   font-size: 0.78rem;

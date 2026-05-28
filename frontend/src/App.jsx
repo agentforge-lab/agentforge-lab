@@ -100,6 +100,22 @@ export default function App() {
         </div>
       </header>
 
+      {/* ── Planning in progress ────────────────────────────────────── */}
+      {planning && (
+        <div className="plan-review plan-loading">
+          <div className="plan-review-header">
+            <span className="plan-review-title">⏳ Generating implementation plan…</span>
+          </div>
+          <div className="plan-loading-steps">
+            <div className="plan-loading-step plan-step-active">⚙ Planner agent started</div>
+            <div className="plan-loading-step plan-step-active">🧠 Calling qwen2.5-coder:7b…</div>
+            <div className="plan-loading-step plan-step-pending">📋 Structuring implementation spec</div>
+            <div className="plan-loading-step plan-step-pending">⎇ Preparing feature branch</div>
+          </div>
+          <div className="plan-loading-note">This takes 5–15 seconds. You'll review the plan before anything runs.</div>
+        </div>
+      )}
+
       {/* ── Plan review panel ───────────────────────────────────────── */}
       {planData && (
         <div className="plan-review">
