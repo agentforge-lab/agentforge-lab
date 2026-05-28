@@ -43,8 +43,12 @@ SUMMARY: Brief one-line description of what was implemented.
 - For simple CLI scripts (calculator, password generator, converter…): ONE file is almost always enough.
   BAD: cli.py + utils/validators.py + utils/io.py + models/config.py  ← over-engineered
   GOOD: cli.py  ← single file, everything inside it
+- For REST APIs and web apps: prefer a SINGLE app.py with all routes, models, and auth logic.
+  BAD: app.py + models/user.py + routes/auth.py + utils/helpers.py  ← over-engineered
+  GOOD: app.py  ← everything in one file, simple dict or SQLite for storage
 - Do NOT add input validation, persistence, logging, or error handling unless the task asks for it.
 - If the task says "CLI" or "script", default to a single Python file at the project root.
+- NEVER create test files (test_*.py). The testing agent handles all tests. Write source code only.
 
 ## Testability rule — CRITICAL
 
@@ -78,6 +82,7 @@ Apply this pattern to every CLI: calculator → `def calculate(a, op, b)`, conve
 - Include all necessary imports.
 - Follow the language's style conventions.
 - Do NOT hardcode credentials, API keys, or secrets. Use `os.environ.get("VAR")` instead.
+- NEVER use `app.run(debug=True)` in Flask — use `app.run(debug=False)`. debug=True is a HIGH security vulnerability.
 
 ## When given existing files as context
 

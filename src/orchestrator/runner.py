@@ -84,8 +84,8 @@ class AgentForgeRunner:
         self.working_dir = working_dir
         self.auto_approve = auto_approve
         self.max_retries = max_retries
-        self.llm = llm or LLMClient.from_hardware_profile()
-        self._app = None   # compiled graph, built lazily
+        self.llm = llm          # None → _build_bundle loads per-agent model_config
+        self._app = None        # compiled graph, built lazily
 
     # ── Public API ─────────────────────────────────────────────────────────
 

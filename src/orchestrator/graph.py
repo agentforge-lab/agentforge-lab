@@ -276,9 +276,23 @@ def make_developer_node(bundle: AgentBundle):
                     )
                 else:
                     retry_reason = "test failures"
+                    # Check if this is a web app so we can add structure guidance
+                    src_content = ""
+                    for p in state.get("edited_file_paths", []):
+                        try:
+                            src_content += (bundle.working_dir / p).read_text()
+                        except Exception:
+                            pass
+                    is_web_retry = any(kw in src_content for kw in ("Flask", "FastAPI", "from flask", "from fastapi"))
+                    structure_note = (
+                        "\n\nIMPORTANT: Keep the SAME single-file structure (app.py). "
+                        "Do NOT add new modules, subdirectories, or refactor into blueprints. "
+                        "Fix ONLY the specific route logic that caused these test failures."
+                    ) if is_web_retry else ""
                     context["previous_error"] = (
                         f"Tests failed on attempt {retry}. Full pytest output:\n\n"
                         + test_output[:2500]
+                        + structure_note
                     )
             elif exec_output and not state.get("exec_passed"):
                 retry_reason = "syntax error"
@@ -403,20 +417,30 @@ def make_tester_node(bundle: AgentBundle):
 
         result = bundle.tester.test_edits(source_files, state.get("task_description", ""))
 
-        # When tests were written but nothing ran, the source has no testable public
-        # functions (all main()/argparse/IO). Give the developer concrete guidance
-        # instead of an empty output that provides no signal.
+        # When tests were written but nothing ran, give the developer concrete guidance.
         if result.total == 0 and result.wrote_tests:
             source_names = ", ".join(source_files.keys())
-            zero_msg = (
-                f"ZERO TESTS COLLECTED — {source_names} has no testable public functions.\n"
-                "The tester correctly skipped main() (calls argparse) and I/O-only functions.\n\n"
-                "FIX: Extract core logic into a pure function that returns a value:\n"
-                "  WRONG: def main(): parse args, do everything, print result\n"
-                "  RIGHT: def generate_password(length=12): return ...  ← testable\n"
-                "         def main(): print(generate_password(...))\n\n"
-                "One root-level .py file with at least one public function besides main()."
-            )
+            src_content   = "\n".join(source_files.values())
+            is_web = any(kw in src_content for kw in ("Flask", "FastAPI", "from flask", "from fastapi"))
+
+            if is_web:
+                zero_msg = (
+                    f"ZERO TESTS COLLECTED — {source_names} is a web app but the tester\n"
+                    "generated 0 test functions. The tests must use the framework's test client.\n\n"
+                    "FIX for Flask:   use app.test_client() — never call route functions directly.\n"
+                    "FIX for FastAPI: use fastapi.testclient.TestClient — never call routes directly.\n\n"
+                    "The tests must have at least one def test_*() function that makes an HTTP request."
+                )
+            else:
+                zero_msg = (
+                    f"ZERO TESTS COLLECTED — {source_names} has no testable public functions.\n"
+                    "The tester correctly skipped main() (calls argparse) and I/O-only functions.\n\n"
+                    "FIX: Extract core logic into a pure function that returns a value:\n"
+                    "  WRONG: def main(): parse args, do everything, print result\n"
+                    "  RIGHT: def generate_password(length=12): return ...  ← testable\n"
+                    "         def main(): print(generate_password(...))\n\n"
+                    "One root-level .py file with at least one public function besides main()."
+                )
             result.raw_output = zero_msg
 
         failures = [

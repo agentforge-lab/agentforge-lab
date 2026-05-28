@@ -217,7 +217,9 @@ class ExecutorAgent:
         """Run pytest on the test suite."""
         import os
         python = self._python_executable()
-        cmd = [str(python), "-m", "pytest", test_path, "-v", "--tb=short"]
+        # Split space-separated paths so each becomes its own pytest argument
+        test_paths = test_path.split() if test_path.strip() else ["tests/"]
+        cmd = [str(python), "-m", "pytest"] + test_paths + ["-v", "--tb=short"]
         if extra_args:
             cmd.extend(extra_args)
         # Ensure root-level modules (e.g. calculator.py) are importable from tests/

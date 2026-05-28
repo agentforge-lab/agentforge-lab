@@ -480,13 +480,8 @@ class DeveloperAgent:
                 parts.append(f"## Existing file: {path}\n```\n{truncated}{suffix}\n```")
         if context.get("previous_error"):
             err_text = context["previous_error"]
-            if "ZERO TESTS COLLECTED" in err_text:
-                # Send in full — the message contains fix instructions the model must follow
-                parts.append(f"## Previous error\n{err_text}")
-            else:
-                # Truncate long pytest output to avoid context bloat
-                err_lines = err_text.splitlines()[:8]
-                parts.append(f"## Previous error\n{chr(10).join(err_lines)}")
+            # Send in full — truncating hides the actual assertion errors the model needs to fix
+            parts.append(f"## Previous error\n{err_text}")
         parts.append(f"## Task\n{task}")
         return "\n\n".join(parts)
 
