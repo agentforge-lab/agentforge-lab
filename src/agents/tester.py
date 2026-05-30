@@ -149,167 +149,35 @@ class TesterAgent:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    def _strip_test_functions(self, code: str, names: set[str]) -> str:
-        """Remove entire test functions whose names are in `names`."""
-        lines = code.splitlines()
-        out: list[str] = []
-        skip_indent: int | None = None
+    _MAX_TESTER_RETRIES = 2
 
-        for line in lines:
-            stripped = line.lstrip()
-            indent = len(line) - len(stripped)
-
-            if skip_indent is not None:
-                # Inside function to skip — stop when we dedent to same level
-                if stripped and indent <= skip_indent:
-                    skip_indent = None
-                    out.append(line)
-                continue
-
-            # Detect function start
-            if stripped.startswith("def "):
-                fname = stripped[4:].split("(")[0]
-                if fname in names:
-                    skip_indent = indent
-                    continue
-
-            out.append(line)
-
-        return "\n".join(out)
+    # Exception type prefixes that mean the test scaffolding is broken, not the source logic.
+    # When ALL failures match one of these, the tester should rewrite the tests, not the developer.
+    _INFRA_ERROR_RE = re.compile(
+        r"^(?:ImportError|ModuleNotFoundError|AttributeError|TypeError|"
+        r"NameError|SyntaxError|IndentationError)",
+    )
 
     @staticmethod
-    def _remove_app_context_wrappers(code: str) -> str:
+    def _should_retry_tester(result: "TesterResult", raw_output: str) -> bool:
         """
-        Remove `with <var>.app_context():` blocks that appear in test functions
-        (no `yield` follows — so they are NOT fixtures already fixed above).
-        De-indents the block body by 4 spaces in place.
+        True when the test failures are due to broken test scaffolding — the tester's
+        fault, not the source code's fault.
 
-        Needed because the model sometimes writes:
-            def test_get_user(client):
-                with client.app_context():   # FlaskClient has no app_context()!
-                    resp = client.get(...)
+        - No tests collected (0 total): test file has import/syntax error
+        - pytest ERRORs (not failures): fixture setup or collection crashed
+        - All FAILED messages start with a Python exception type (AttributeError, etc.):
+          the test code called something wrong, not a logic assertion failure
         """
-        lines = code.splitlines()
-        result: list[str] = []
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            stripped = line.lstrip()
-            indent = len(line) - len(stripped)
-
-            if re.match(r'with\s+\w+\.app_context\(\)\s*:\s*$', stripped):
-                # Check if the next non-blank line is `yield` (fixture — leave it alone)
-                is_fixture = False
-                for j in range(i + 1, min(i + 5, len(lines))):
-                    nxt = lines[j].strip()
-                    if nxt:
-                        is_fixture = nxt.startswith("yield")
-                        break
-
-                if not is_fixture:
-                    # Drop the `with` line, de-indent its body by 4 spaces
-                    i += 1
-                    while i < len(lines):
-                        body = lines[i]
-                        body_stripped = body.lstrip()
-                        actual_indent = len(body) - len(body_stripped)
-                        if body_stripped and actual_indent <= indent:
-                            break
-                        result.append(
-                            " " * max(0, actual_indent - 4) + body_stripped
-                            if body_stripped else ""
-                        )
-                        i += 1
-                    continue
-
-            result.append(line)
-            i += 1
-
-        return "\n".join(result)
-
-    def _fix_flask_assertions(self, code: str) -> str:
-        """
-        Post-process Flask/FastAPI test code to replace brittle assertions with flexible ones.
-
-        Fixes:
-        - assertEqual(response.status_code, X) → assertIn(response.status_code, (...))
-        - assert response.status_code == X → assert response.status_code in (...)
-        - Remove lines that assert response body/JSON content
-        - Fix 'from app import app, users, db, ...' → 'from app import app'
-        """
-        import re as _re
-
-        _CODES = "(200, 201, 204, 400, 401, 403, 404, 405, 409, 422, 500)"
-
-        # Fix assertEqual(response.status_code, X) — both `response` and `resp`
-        code = _re.sub(
-            r'self\.assertEqual\((\w*[Rr]esp\w*)\.status_code,\s*\d+\)',
-            lambda m: f'self.assertIn({m.group(1)}.status_code, {_CODES})',
-            code,
-        )
-        # Fix assert response.status_code == X
-        code = _re.sub(
-            r'assert\s+(\w*[Rr]esp\w*)\.status_code\s*==\s*\d+',
-            lambda m: f'assert {m.group(1)}.status_code in {_CODES}',
-            code,
-        )
-        # Remove lines that check response body/JSON text
-        _BODY_LINE = _re.compile(
-            r'^\s*(?:self\.(?:assert\w+|assertEqual)\(.*?'
-            r'(?:get_data|get_json|\.json\b|\.data\b|\.text\b).*|'
-            r'assert\s+.*(?:get_data|get_json|\.json\b|\.data\b)).*$',
-            _re.MULTILINE,
-        )
-        code = _BODY_LINE.sub('', code)
-
-        # Fix 'from app import app, users, db, ...' → 'from app import app'
-        code = _re.sub(
-            r'from\s+app\s+import\s+app\s*,\s*[^\n]+',
-            'from app import app',
-            code,
-        )
-
-        # TESTING=True makes Flask propagate exceptions instead of returning 500 responses
-        # Switch to False so app bugs become 500 HTTP responses — flexible assertions handle them
-        code = code.replace(
-            "config['TESTING'] = True",
-            "config['TESTING'] = False",
-        )
-
-        # Normalize status code tuples: add 500, ensure closing paren (handles model dropping it)
-        def _normalize_codes(m: re.Match) -> str:
-            raw = m.group(1).rstrip(", ")
-            codes = {c.strip() for c in raw.split(",") if c.strip().isdigit()}
-            codes.add("500")
-            return "in (" + ", ".join(sorted(codes, key=int)) + ")"
-        # Match with OR without the closing paren (model sometimes drops it)
-        code = re.sub(r'in\s*\(([0-9, ]+)\)?', _normalize_codes, code)
-
-        # Safety: close any unclosed status-code tuple at end of line (syntax error guard)
-        code = re.sub(
-            r'(assert\s+\w+\.status_code\s+in\s+\([0-9, ]+)$',
-            r'\1)',
-            code,
-            flags=re.MULTILINE,
-        )
-
-        # Fix: app_context() used as test client in "with ... as c: yield c" pattern
-        # The model often writes: with flask_app.app_context() as c: [optional comment]
-        #                             yield c
-        # But AppContext has no .post()/.get() — must use test_client()
-        # [^\n]* handles trailing comments on the same line
-        code = _re.sub(
-            r'with\s+(\w+)\.app_context\(\)\s+as\s+(\w+):[^\n]*\n(\s+)yield\s+\2',
-            r'with \1.test_client() as \2:\n\3yield \2',
-            code,
-        )
-
-        # Fix: `with client.app_context():` inside test functions (no yield — not a fixture)
-        # FlaskClient has no app_context() method → AttributeError: 'FlaskClient' object…
-        # Remove the `with` line entirely and de-indent the body by one level.
-        code = self._remove_app_context_wrappers(code)
-
-        return code
+        if result.total == 0:
+            return True
+        if result.errors > 0:
+            return True
+        if result.failures and all(
+            TesterAgent._INFRA_ERROR_RE.match(f.error) for f in result.failures
+        ):
+            return True
+        return False
 
     def _strip_unsafe_char_assertions(self, code: str) -> str:
         """
@@ -390,72 +258,54 @@ class TesterAgent:
     ) -> TesterResult:
         """
         Write tests for the given source files, run them, return results.
-        `source_files`: {relative_path: file_content}
+
+        If the tests fail due to broken test scaffolding (wrong imports, wrong method
+        calls, missing fixtures — anything with an infrastructure exception type), the
+        tester LLM is given the full error output and asked to rewrite the tests.
+        Up to _MAX_TESTER_RETRIES extra attempts are made before handing off to the
+        developer.  Only genuine logic failures (assertion errors) are passed through
+        to the developer retry loop.
         """
         if not source_files:
             return TesterResult(success=False, error="No source files provided")
 
-        # Step 1: generate tests via LLM
-        test_code_result = self._generate_tests(source_files, task_description)
-        if not test_code_result.success:
-            return TesterResult(
-                success=False,
-                error=f"Test generation failed: {test_code_result.error}",
-            )
-
-        # Step 2: write test files to disk
-        self._developer.apply_edits(test_code_result.edits)
-        test_files = [e.file_path for e in test_code_result.edits]
-        test_path = " ".join(test_files) if test_files else "tests/"
-
-        # Step 2.5: install any third-party packages imported by the source
         self._ensure_dependencies(source_files)
 
-        # Step 3: run the tests
-        run_result = self._executor.run_tests(test_path=test_path)
-        raw = run_result.stdout + run_result.stderr
+        test_files: list[str] = []
+        run_result = None
+        result = TesterResult(success=False)
+        raw = ""
 
-        # Step 4: self-heal — fix hallucinated/broken test patterns:
-        # • "DID NOT RAISE"         : strip pytest.raises blocks
-        # • wrong kwargs            : strip entire test functions
-        # • stdin/OSError           : strip test functions that call main() directly
-        # • assert False (bad chars): strip test functions with unsafe char assertions
-        result = parse_pytest_output(raw)
-        # "DID NOT RAISE" only appears in the detailed section — scan raw directly.
-        has_did_not_raise = "DID NOT RAISE" in raw
-        bad_kwargs = {f.test_name for f in result.failures if "unexpected keyword argument" in f.error}
-        bad_stdin  = {f.test_name for f in result.failures
-                      if any(p in f.error.lower()
-                             for p in ("stdin", "oserror", "systemexit"))}
-        # Char-assertion failures: "assert False" + bad char-check pattern in raw
-        _bad_char_raw = any(
-            p in raw for p in ("assert all(c in string.", "assert any(c.is", "assert all(c.is")
-        )
-        bad_char_assert = (
-            {f.test_name for f in result.failures if f.error.strip() == "assert False"}
-            if _bad_char_raw else set()
-        )
-        bad_funcs = bad_kwargs | bad_stdin | bad_char_assert
-        if not result.success and (has_did_not_raise or bad_funcs):
-            for test_file in test_files:
-                abs_path = self.working_dir / test_file
-                if not abs_path.exists():
-                    continue
-                content = abs_path.read_text()
-                if bad_funcs:
-                    content = self._strip_test_functions(content, bad_funcs)
-                if has_did_not_raise:
-                    content = self._strip_raises_blocks(content)
-                abs_path.write_text(content)
+        for attempt in range(self._MAX_TESTER_RETRIES + 1):
+            gen = self._generate_tests(
+                source_files, task_description,
+                retry_error=raw if attempt > 0 else None,
+                attempt=attempt,
+            )
+            if not gen.success:
+                return TesterResult(
+                    success=False,
+                    error=f"Test generation failed: {gen.error}",
+                )
+
+            self._developer.apply_edits(gen.edits)
+            test_files = [e.file_path for e in gen.edits]
+            test_path = " ".join(test_files) if test_files else "tests/"
+
             run_result = self._executor.run_tests(test_path=test_path)
             raw = run_result.stdout + run_result.stderr
             result = parse_pytest_output(raw)
+
+            if result.success:
+                break
+            if not self._should_retry_tester(result, raw):
+                break  # Logic failure — let the developer fix the source
 
         result.raw_output = raw
         result.test_file = test_files[0] if test_files else ""
         result.wrote_tests = True
 
-        if run_result.timed_out:
+        if run_result and run_result.timed_out:
             result.success = False
             result.error = "Test run timed out"
 
@@ -711,19 +561,38 @@ class TesterAgent:
                 lines.append(f"  {sig}")
         return "\n".join(lines) if lines else ""
 
-    def _generate_tests(self, source_files: dict[str, str], task: str):
-        """Ask the LLM to write tests for the given source files."""
+    def _generate_tests(
+        self,
+        source_files: dict[str, str],
+        task: str,
+        *,
+        retry_error: str | None = None,
+        attempt: int = 0,
+    ):
+        """
+        Ask the LLM to write pytest tests for the given source files.
+
+        On retries (attempt > 0), the full pytest error output from the previous
+        attempt is injected so the LLM can self-correct — regardless of framework.
+        """
         file_sections = []
         for path, content in source_files.items():
             file_sections.append(f"## File: {path}\n```python\n{content}\n```")
 
-        # Tell the model exactly which exceptions the source raises (or none)
         all_source = "\n".join(source_files.values())
+
+        # Tell the model exactly which exceptions the source raises (or none)
         raised = sorted(set(re.findall(r"\braise\s+(\w+)", all_source)))
         if raised:
-            exc_note = f"NOTE: The source raises these exceptions: {', '.join(raised)}. Only use pytest.raises() for these."
+            exc_note = (
+                f"NOTE: The source raises these exceptions: {', '.join(raised)}. "
+                "Only use pytest.raises() for these."
+            )
         else:
-            exc_note = "NOTE: The source code does NOT contain any `raise` statement. Do NOT use pytest.raises() at all."
+            exc_note = (
+                "NOTE: The source code does NOT contain any `raise` statement. "
+                "Do NOT use pytest.raises() at all."
+            )
 
         # Extract exact signatures so the model never calls functions with wrong args
         sigs = self._extract_signatures(source_files)
@@ -733,30 +602,36 @@ class TesterAgent:
             "If you need an edge case, call the function with only the parameters shown."
         ) if sigs else ""
 
-        # Inject framework-specific testing template when a web framework is detected
+        # Framework-specific first-attempt guidance (reduces retries needed for common patterns)
         framework = self._detect_framework(source_files)
         fw_guide = self._framework_testing_guide(framework, source_files) if framework else ""
 
-        user_prompt = "\n\n".join(
-            file_sections
-            + ([f"## Goal\n{task}"] if task else [])
-            + ([sig_section] if sig_section and not framework else [])
-            + ([fw_guide] if fw_guide else [])
-            + [
-                f"## Exception context\n{exc_note}",
-                "## Task\n"
-                "Write pytest tests for the source code above.\n\n"
-                "RULES:\n"
-                "- Test ACTUAL behaviour — not what you wish it did.\n"
-                + ("- Follow the web framework testing pattern above exactly.\n" if framework else
-                   "- Only call functions with the EXACT parameters listed in the signatures above.\n")
-                + "- Test every public route or function: at least one happy path each.\n"
-                "- Use the <agentforge_edits> format.",
-            ]
-        )
+        # On retries, prepend the full error output so the LLM can diagnose and fix
+        retry_section = (
+            f"## RETRY — Attempt {attempt + 1}\n"
+            "Your previous tests produced these errors. Rewrite the tests from scratch "
+            "to fix them. Focus on the exact import paths, method names, and fixture setup "
+            "shown in the source code above.\n\n"
+            f"```\n{retry_error[-3000:]}\n```"
+        ) if retry_error else ""
 
-        # Call the LLM directly with TESTER_SYSTEM — do NOT go through DeveloperAgent
-        # because DeveloperAgent.dry_run() always substitutes DEVELOPER_SYSTEM.
+        user_prompt = "\n\n".join(filter(None, [
+            *file_sections,
+            f"## Goal\n{task}" if task else "",
+            sig_section if sig_section and not framework else "",
+            fw_guide,
+            retry_section,
+            f"## Exception context\n{exc_note}",
+            "## Task\n"
+            "Write pytest tests for the source code above.\n\n"
+            "RULES:\n"
+            "- Test ACTUAL behaviour — not what you wish it did.\n"
+            + ("- Follow the web framework testing pattern above exactly.\n" if framework else
+               "- Only call functions with the EXACT parameters listed in the signatures above.\n")
+            + "- Test every public route or function: at least one happy path each.\n"
+            "- Use the <agentforge_edits> format.",
+        ]))
+
         try:
             response = self.llm.complete(TESTER_SYSTEM, user_prompt)
         except Exception as e:
@@ -769,12 +644,13 @@ class TesterAgent:
                 error="No <agentforge_edits> block found in tester LLM response",
             )
 
-        # Post-process generated test code before writing to disk
+        # Universal post-processing: cheap, framework-agnostic pre-filters
+        has_raises = bool(re.search(r"\braise\b", all_source))
         for edit in edits:
             if edit.content and edit.file_path.endswith(".py"):
                 edit.content = self._fix_missing_imports(edit.content)
                 edit.content = self._strip_unsafe_char_assertions(edit.content)
-                if framework:
-                    edit.content = self._fix_flask_assertions(edit.content)
+                if not has_raises:
+                    edit.content = self._strip_raises_blocks(edit.content)
 
         return DeveloperResult(success=True, edits=edits, summary=summary)

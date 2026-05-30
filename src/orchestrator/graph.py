@@ -276,23 +276,12 @@ def make_developer_node(bundle: AgentBundle):
                     )
                 else:
                     retry_reason = "test failures"
-                    # Check if this is a web app so we can add structure guidance
-                    src_content = ""
-                    for p in state.get("edited_file_paths", []):
-                        try:
-                            src_content += (bundle.working_dir / p).read_text()
-                        except Exception:
-                            pass
-                    is_web_retry = any(kw in src_content for kw in ("Flask", "FastAPI", "from flask", "from fastapi"))
-                    structure_note = (
-                        "\n\nIMPORTANT: Keep the SAME single-file structure (app.py). "
-                        "Do NOT add new modules, subdirectories, or refactor into blueprints. "
-                        "Fix ONLY the specific route logic that caused these test failures."
-                    ) if is_web_retry else ""
                     context["previous_error"] = (
                         f"Tests failed on attempt {retry}. Full pytest output:\n\n"
                         + test_output[:2500]
-                        + structure_note
+                        + "\n\nIMPORTANT: Keep the SAME file structure. "
+                        "Fix ONLY the source logic that caused these test failures. "
+                        "Do NOT rename files, add new modules, or refactor the layout."
                     )
             elif exec_output and not state.get("exec_passed"):
                 retry_reason = "syntax error"
