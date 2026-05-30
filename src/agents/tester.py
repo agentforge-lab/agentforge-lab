@@ -177,6 +177,56 @@ class TesterAgent:
 
         return "\n".join(out)
 
+    @staticmethod
+    def _remove_app_context_wrappers(code: str) -> str:
+        """
+        Remove `with <var>.app_context():` blocks that appear in test functions
+        (no `yield` follows — so they are NOT fixtures already fixed above).
+        De-indents the block body by 4 spaces in place.
+
+        Needed because the model sometimes writes:
+            def test_get_user(client):
+                with client.app_context():   # FlaskClient has no app_context()!
+                    resp = client.get(...)
+        """
+        lines = code.splitlines()
+        result: list[str] = []
+        i = 0
+        while i < len(lines):
+            line = lines[i]
+            stripped = line.lstrip()
+            indent = len(line) - len(stripped)
+
+            if re.match(r'with\s+\w+\.app_context\(\)\s*:\s*$', stripped):
+                # Check if the next non-blank line is `yield` (fixture — leave it alone)
+                is_fixture = False
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    nxt = lines[j].strip()
+                    if nxt:
+                        is_fixture = nxt.startswith("yield")
+                        break
+
+                if not is_fixture:
+                    # Drop the `with` line, de-indent its body by 4 spaces
+                    i += 1
+                    while i < len(lines):
+                        body = lines[i]
+                        body_stripped = body.lstrip()
+                        actual_indent = len(body) - len(body_stripped)
+                        if body_stripped and actual_indent <= indent:
+                            break
+                        result.append(
+                            " " * max(0, actual_indent - 4) + body_stripped
+                            if body_stripped else ""
+                        )
+                        i += 1
+                    continue
+
+            result.append(line)
+            i += 1
+
+        return "\n".join(result)
+
     def _fix_flask_assertions(self, code: str) -> str:
         """
         Post-process Flask/FastAPI test code to replace brittle assertions with flexible ones.
@@ -254,6 +304,11 @@ class TesterAgent:
             code,
         )
 
+        # Fix: `with client.app_context():` inside test functions (no yield — not a fixture)
+        # FlaskClient has no app_context() method → AttributeError: 'FlaskClient' object…
+        # Remove the `with` line entirely and de-indent the body by one level.
+        code = self._remove_app_context_wrappers(code)
+
         return code
 
     def _strip_unsafe_char_assertions(self, code: str) -> str:
@@ -296,7 +351,6 @@ class TesterAgent:
             # Detect start of a with pytest.raises(...): block
             if stripped.startswith("with pytest.raises("):
                 indent = len(line) - len(stripped)
-                body_indent = indent + 4
                 i += 1
                 # Skip all lines that belong to this block's body
                 while i < len(lines):
