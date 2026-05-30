@@ -155,8 +155,58 @@ class TesterAgent:
     # When ALL failures match one of these, the tester should rewrite the tests, not the developer.
     _INFRA_ERROR_RE = re.compile(
         r"^(?:ImportError|ModuleNotFoundError|AttributeError|TypeError|"
-        r"NameError|SyntaxError|IndentationError)",
+        r"NameError|SyntaxError|IndentationError|SystemExit|OSError)",
     )
+
+    @staticmethod
+    def _fix_test_imports(code: str, source_files: dict[str, str]) -> str:
+        """
+        Correct `from X import func` lines where func is defined in a source file
+        but X is the wrong module name.  The LLM sometimes hallucinates module names
+        (e.g. writes `from calculator import` for `password_generator.py`).
+        We know the real module names from source_files, so this is always fixable.
+        """
+        import ast as _ast
+
+        # Build: function_name → correct_module_stem
+        func_to_module: dict[str, str] = {}
+        for path, content in source_files.items():
+            module = Path(path).stem
+            try:
+                tree = _ast.parse(content)
+            except SyntaxError:
+                continue
+            for node in _ast.walk(tree):
+                if isinstance(node, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef)):
+                    if not node.name.startswith("_"):
+                        func_to_module[node.name] = module
+
+        if not func_to_module:
+            return code
+
+        def _fix_line(m: re.Match) -> str:
+            wrong_mod = m.group(1)
+            names_str = m.group(2).strip()
+            names = [n.strip().split(" as ")[0].strip() for n in names_str.split(",") if n.strip()]
+            # Check if any name belongs to a different module
+            corrections: dict[str, list[str]] = {}
+            unchanged: list[str] = []
+            for name in names:
+                correct = func_to_module.get(name)
+                if correct and correct != wrong_mod:
+                    corrections.setdefault(correct, []).append(name)
+                else:
+                    unchanged.append(name)
+            if not corrections:
+                return m.group(0)  # nothing to fix
+            parts = []
+            if unchanged:
+                parts.append(f"from {wrong_mod} import {', '.join(unchanged)}")
+            for mod, ns in corrections.items():
+                parts.append(f"from {mod} import {', '.join(ns)}")
+            return "\n".join(parts)
+
+        return re.sub(r"from\s+(\w+)\s+import\s+([^\n]+)", _fix_line, code)
 
     @staticmethod
     def _should_retry_tester(result: "TesterResult", raw_output: str) -> bool:
@@ -172,6 +222,9 @@ class TesterAgent:
         if result.total == 0:
             return True
         if result.errors > 0:
+            return True
+        # pytest.raises() written for a case that doesn't actually raise
+        if "DID NOT RAISE" in raw_output:
             return True
         if result.failures and all(
             TesterAgent._INFRA_ERROR_RE.match(f.error) for f in result.failures
@@ -298,7 +351,10 @@ class TesterAgent:
 
             if result.success:
                 break
-            if not self._should_retry_tester(result, raw):
+            # Always retry on the first failure — even AssertionErrors can be wrong tests
+            # (e.g. asserting a specific random string). Only stop retrying after the
+            # second attempt if failures look like genuine source logic bugs.
+            if attempt > 0 and not self._should_retry_tester(result, raw):
                 break  # Logic failure — let the developer fix the source
 
         result.raw_output = raw
@@ -649,6 +705,7 @@ class TesterAgent:
         for edit in edits:
             if edit.content and edit.file_path.endswith(".py"):
                 edit.content = self._fix_missing_imports(edit.content)
+                edit.content = self._fix_test_imports(edit.content, source_files)
                 edit.content = self._strip_unsafe_char_assertions(edit.content)
                 if not has_raises:
                     edit.content = self._strip_raises_blocks(edit.content)
