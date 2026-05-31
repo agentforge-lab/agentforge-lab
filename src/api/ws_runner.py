@@ -29,6 +29,7 @@ async def run_pipeline_ws(
     auto_approve: bool,
     max_retries: int,
     send_event: Callable[[dict], Awaitable[None]],
+    mode: str = "pipeline",
 ) -> RunResult:
     """
     Run the AgentForge pipeline in a thread, streaming every emitted event
@@ -56,6 +57,7 @@ async def run_pipeline_ws(
         working_dir=working_dir,
         auto_approve=auto_approve,
         max_retries=max_retries,
+        mode=mode,
     )
 
     def run_sync() -> None:

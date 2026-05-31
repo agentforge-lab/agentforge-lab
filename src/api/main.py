@@ -217,6 +217,7 @@ async def run_ws(websocket: WebSocket):
     goal         = (data.get("goal") or "").strip()
     auto_approve = bool(data.get("auto_approve", True))
     max_retries  = int(data.get("max_retries", 3))
+    mode         = data.get("mode", "pipeline")   # "pipeline" or "agent"
 
     if not goal:
         await websocket.send_json({"type": "error", "data": {"message": "goal is required"}})
@@ -251,6 +252,7 @@ async def run_ws(websocket: WebSocket):
             auto_approve=auto_approve,
             max_retries=max_retries,
             send_event=send_event,
+            mode=mode,
         )
     except WebSocketDisconnect:
         return

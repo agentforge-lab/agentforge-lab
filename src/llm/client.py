@@ -24,6 +24,7 @@ class LLMResponse:
     tokens_out: int
     duration_ms: int
     cost_usd: float = 0.0
+    tool_calls: list[dict] | None = None   # populated when model calls tools
 
 
 # Anthropic pricing per 1M tokens
@@ -75,25 +76,36 @@ class LLMClient:
             "or start Ollama with `ollama serve`"
         )
 
+    def complete(self, system: str, user: str, **kwargs) -> LLMResponse:
+        """Shorthand for a single system + user turn."""
+        return self.chat(
+            [{"role": "system", "content": system},
+             {"role": "user",   "content": user}],
+            **kwargs,
+        )
+
     def chat(
         self,
         messages: list[dict],
         force_api: bool = False,
         temperature: float = 0.2,
         max_tokens: int = 4096,
-        _purpose: str = "",        # human-readable label for event log
+        tools: list[dict] | None = None,
+        _purpose: str = "",
     ) -> LLMResponse:
-        """Send a chat completion. Raises on connection failure."""
-        from litellm import completion  # imported here to avoid slow startup elsewhere
+        """
+        Send a chat completion, optionally with tools for function/tool calling.
+        When tools are provided and the model calls one, response.tool_calls is populated.
+        """
+        from litellm import completion
         from src.api.events import emit, E
 
         model, api_base = self._resolve_model(force_api)
 
-        # Build a short prompt preview from the user message
-        user_msg   = next((m["content"] for m in reversed(messages) if m["role"] == "user"), "")
+        user_msg   = next((m["content"] for m in reversed(messages) if m["role"] == "user" and isinstance(m.get("content"), str)), "")
         system_msg = next((m["content"] for m in messages if m["role"] == "system"), "")
-        prompt_preview   = user_msg[:200].replace("\n", " ")
-        purpose_label    = _purpose or system_msg[:60].split("\n")[0]
+        prompt_preview = (user_msg or "")[:200].replace("\n", " ")
+        purpose_label  = _purpose or (system_msg or "")[:60].split("\n")[0]
 
         emit(E.LLM_CALL_STARTED,
              model=model.split("/")[-1],
@@ -108,7 +120,10 @@ class LLMClient:
         )
         if api_base:
             kwargs["api_base"] = api_base
-            kwargs["options"] = {"num_ctx": 16384}  # Ollama default is 2048 — far too small for retry context
+            kwargs["options"] = {"num_ctx": 16384}
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
 
         t0 = time.monotonic()
         try:
@@ -119,10 +134,26 @@ class LLMClient:
 
         duration_ms = int((time.monotonic() - t0) * 1000)
 
-        content = response.choices[0].message.content or ""
-        usage = response.usage
+        choice  = response.choices[0]
+        content = choice.message.content or ""
+        usage   = response.usage
         tokens_in  = usage.prompt_tokens     if usage else 0
         tokens_out = usage.completion_tokens if usage else 0
+
+        # Extract tool calls if the model used them
+        tool_calls_out: list[dict] | None = None
+        if hasattr(choice.message, "tool_calls") and choice.message.tool_calls:
+            tool_calls_out = [
+                {
+                    "id":       tc.id,
+                    "type":     "function",
+                    "function": {
+                        "name":      tc.function.name,
+                        "arguments": tc.function.arguments,
+                    },
+                }
+                for tc in choice.message.tool_calls
+            ]
 
         cost = 0.0
         if not api_base and model in _PRICING:
@@ -145,14 +176,7 @@ class LLMClient:
             tokens_out=tokens_out,
             duration_ms=duration_ms,
             cost_usd=cost,
-        )
-
-    def complete(self, system: str, user: str, **kwargs) -> LLMResponse:
-        """Shorthand for a single system + user turn."""
-        return self.chat(
-            [{"role": "system", "content": system},
-             {"role": "user",   "content": user}],
-            **kwargs,
+            tool_calls=tool_calls_out,
         )
 
     @classmethod

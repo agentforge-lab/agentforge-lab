@@ -16,6 +16,7 @@ from src.agents.developer import DeveloperAgent
 from src.agents.executor import ExecutorAgent
 from src.agents.explainer import ExplainerAgent
 from src.agents.git_manager import GitManagerAgent
+from src.agents.loop import AgentLoop, AgentResult
 from src.agents.planner import PlannerAgent
 from src.agents.security import SecurityAgent
 from src.agents.tester import TesterAgent
@@ -81,22 +82,28 @@ class AgentForgeRunner:
         auto_approve: bool = False,
         max_retries: int = 3,
         llm: LLMClient | None = None,
+        mode: str = "pipeline",   # "pipeline" = fixed graph, "agent" = ReAct loop
     ):
         self.working_dir = working_dir
         self.auto_approve = auto_approve
         self.max_retries = max_retries
-        self.llm = llm          # None → _build_bundle loads per-agent model_config
-        self._app = None        # compiled graph, built lazily
+        self.llm = llm
+        self.mode = mode
+        self._app = None        # compiled graph, built lazily (pipeline mode only)
 
     # ── Public API ─────────────────────────────────────────────────────────
 
     def run(self, goal: str) -> RunResult:
         """
-        Run the full agent pipeline for `goal`.
-        Blocks until complete (or max_retries exceeded).
+        Run the agent for `goal`.
+        mode="pipeline" → fixed plan→code→test→commit graph (default)
+        mode="agent"    → ReAct loop where the model calls tools dynamically
         """
         from src.api.events import emit, E
         emit(E.RUN_STARTED, "", goal=goal, working_dir=str(self.working_dir))
+
+        if self.mode == "agent":
+            return self._run_agent(goal)
 
         app = self._get_app(goal)
         initial = default_state(goal, max_retries=self.max_retries)
@@ -133,6 +140,36 @@ class AgentForgeRunner:
              retry_count=result.retry_count,
              error=result.error)
         return result
+
+    def _run_agent(self, goal: str) -> RunResult:
+        """Run the ReAct agent loop (truly agentic mode)."""
+        import asyncio
+        from src.llm.model_config import load_model_config, make_llm_client
+
+        if self.llm is not None:
+            agent_llm = self.llm
+        else:
+            cfg = load_model_config()
+            agent_llm = make_llm_client(cfg.for_agent("developer"))
+
+        loop = AgentLoop(llm=agent_llm, working_dir=self.working_dir, goal=goal)
+
+        try:
+            result: AgentResult = asyncio.run(loop.run(goal))
+        except Exception as e:
+            return RunResult(success=False, goal=goal, error=f"Agent loop error: {e}")
+
+        return RunResult(
+            success=result.success,
+            goal=goal,
+            commit_sha=result.commit_sha,
+            branch=result.branch,
+            tests_passed=result.tests_passed,
+            security_passed=result.security_passed,
+            retry_count=result.steps,
+            session_log=result.session_log,
+            error=result.error,
+        )
 
     # ── Internal ──────────────────────────────────────────────────────────
 
