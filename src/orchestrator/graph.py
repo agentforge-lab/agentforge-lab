@@ -387,10 +387,6 @@ def make_tester_node(bundle: AgentBundle):
                 continue
             if "tests/" in rel_path or "tests\\" in rel_path:
                 continue
-            # Only test root-level files; utility/helper submodules are tested
-            # indirectly and their import chains cause collection errors.
-            if "/" in rel_path or "\\" in rel_path:
-                continue
             abs_path = bundle.working_dir / rel_path
             if abs_path.exists():
                 source_files[rel_path] = abs_path.read_text()

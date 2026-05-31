@@ -149,7 +149,7 @@ class TesterAgent:
 
     # ── Public API ─────────────────────────────────────────────────────────
 
-    _MAX_TESTER_RETRIES = 2
+    _MAX_TESTER_RETRIES = 3
 
     # Exception type prefixes that mean the test scaffolding is broken, not the source logic.
     # When ALL failures match one of these, the tester should rewrite the tests, not the developer.
@@ -541,42 +541,6 @@ class TesterAgent:
             )
         return ""
 
-    # Known stdlib modules that tests commonly reference without importing
-    _STDLIB_MODULES = frozenset({
-        "string", "os", "re", "sys", "random", "math", "json",
-        "collections", "itertools", "functools", "datetime", "pathlib",
-        "typing", "time", "hashlib", "base64", "uuid", "argparse",
-    })
-
-    def _fix_missing_imports(self, code: str) -> str:
-        """Auto-add stdlib imports that are used in code but not yet imported."""
-        # Collect already-imported names
-        existing: set[str] = set()
-        for line in code.splitlines():
-            m = re.match(r"^import\s+(\w+)", line)
-            if m:
-                existing.add(m.group(1))
-            m = re.match(r"^from\s+(\w+)\s+import", line)
-            if m:
-                existing.add(m.group(1))
-
-        needed = sorted(
-            mod for mod in self._STDLIB_MODULES
-            if f"{mod}." in code and mod not in existing
-        )
-        if not needed:
-            return code
-
-        # Insert after the last existing import line (or at top if none)
-        lines = code.splitlines()
-        last_import = -1
-        for i, line in enumerate(lines):
-            if line.startswith("import ") or line.startswith("from "):
-                last_import = i
-        insert_at = last_import + 1 if last_import >= 0 else 0
-        for offset, mod in enumerate(needed):
-            lines.insert(insert_at + offset, f"import {mod}")
-        return "\n".join(lines)
 
     @staticmethod
     def _extract_signatures(source_files: dict[str, str]) -> str:
@@ -704,7 +668,6 @@ class TesterAgent:
         has_raises = bool(re.search(r"\braise\b", all_source))
         for edit in edits:
             if edit.content and edit.file_path.endswith(".py"):
-                edit.content = self._fix_missing_imports(edit.content)
                 edit.content = self._fix_test_imports(edit.content, source_files)
                 edit.content = self._strip_unsafe_char_assertions(edit.content)
                 if not has_raises:

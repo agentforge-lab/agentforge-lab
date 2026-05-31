@@ -76,6 +76,27 @@ RIGHT — testable + CLI:
 
 Apply this pattern to every CLI: calculator → `def calculate(a, op, b)`, converter → `def convert(value, unit)`, etc.
 
+## File I/O — testability rule
+
+If your code reads or writes a file, pass the file path as an optional parameter to every function that touches it.
+NEVER use a module-level constant as the only way to control the file path.
+
+WRONG — hard to test, monkeypatch required:
+  TODO_FILE = "tasks.json"
+  def add_task(task):
+      tasks = load_tasks()
+      tasks.append(task)
+      save_tasks(tasks)
+
+RIGHT — trivially testable, no monkeypatch needed:
+  DEFAULT_FILE = "tasks.json"
+  def load_tasks(filepath=DEFAULT_FILE): ...
+  def save_tasks(tasks, filepath=DEFAULT_FILE): ...
+  def add_task(task, filepath=DEFAULT_FILE):
+      tasks = load_tasks(filepath)
+      tasks.append(task)
+      save_tasks(tasks, filepath)
+
 ## Code quality rules
 
 - Write complete, working files — no stubs, no TODOs, no ellipsis (`...`) as placeholder.
@@ -157,12 +178,49 @@ SUMMARY: Brief description of what tests were written.
 - Do NOT test private functions (names starting with `_`).
 - Do NOT test functions that only do I/O (print, input, file reads) without returning a value.
 
+## File I/O testing rules — CRITICAL
+
+- The developer writes functions that accept a file path parameter (e.g. `add_task(task, filepath)`).
+  Use pytest `tmp_path` to pass a temporary path directly — no monkeypatch needed:
+  ```python
+  def test_add_task(tmp_path):
+      fp = str(tmp_path / "tasks.json")
+      add_task("buy milk", fp)
+      assert load_tasks(fp) == ["buy milk"]
+  ```
+- NEVER pass `tmp_path` (a Path object) to a function that only accepts a string — convert with `str(tmp_path / "file.json")`.
+- NEVER pass `tmp_path` to a function that does not have a file path parameter — check the signature first.
+- NEVER rely on state left by a previous test. Every test must be independent.
+- CRITICAL: if you save test data to `fp`, every subsequent function call in that test that reads the file MUST also receive `fp`. Missing `fp` on any call means it reads the wrong (empty) file and returns [].
+  WRONG:
+    save_inventory(data, fp)
+    result = search_by_name('apple')       ← missing fp, reads wrong file
+  RIGHT:
+    save_inventory(data, fp)
+    result = search_by_name('apple', fp)   ← correct
+- When testing search/filter functions, ensure the test data actually contains the fields being searched. If testing `search_by_category`, include a `category` key in the test data.
+- NEVER use `csv.DictWriter`, `csv.DictReader`, `open()`, or any file primitives directly in tests.
+  Always use the source module's own functions (e.g. call `write_csv(data, fp)` to set up state,
+  then call `read_csv(fp)` to verify). This keeps tests free of extra imports and extra setup code.
+- For CSV: Python's `csv.DictReader` returns ALL values as strings unless the source code
+  explicitly converts them. Read the source's `read_csv`/`read_rows` function carefully —
+  if it does NOT convert types, use string values in your assertions.
+
 ## pytest.raises rules — CRITICAL
 
 - Read the source code carefully. Does it contain the word `raise`? If NO → do NOT use pytest.raises() at all.
 - ONLY write `pytest.raises(SomeError)` if you can see `raise SomeError` in the source code.
 - If a function with bad input returns empty string, None, or garbage — test the return value instead.
 - When unsure: SKIP the error-case test entirely. A missing test is better than a wrong one.
+
+## Floating-point rules — CRITICAL
+
+- For any mathematical computation (unit conversions, arithmetic, geometry), use `pytest.approx` with
+  a **relative tolerance of at least 1e-3** (0.1%) to account for implementation choices in constants:
+  WRONG: `assert convert(1, "miles", "meters") == pytest.approx(1609.34)`   ← too tight
+  RIGHT: `assert convert(1, "miles", "meters") == pytest.approx(1609.34, rel=1e-3)`
+- For temperature and other non-ratio quantities use `abs=1e-2` (0.01 absolute tolerance).
+- NEVER compare floats with `==` directly — always use `pytest.approx`.
 
 ## Determinism rules — CRITICAL
 
