@@ -108,6 +108,7 @@ class LLMClient:
         )
         if api_base:
             kwargs["api_base"] = api_base
+            kwargs["options"] = {"num_ctx": 16384}  # Ollama default is 2048 — far too small for retry context
 
         t0 = time.monotonic()
         try:

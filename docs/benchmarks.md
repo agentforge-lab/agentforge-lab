@@ -8,6 +8,10 @@ Run these after any significant change to agents, prompts, or orchestration logi
 - Developer: `qwen2.5-coder:7b`
 - Tester: `qwen2.5-coder:7b`
 
+**Infrastructure (day-09+):**
+- `num_ctx=16384` on all Ollama calls (was default 2048)
+- Multi-turn conversation threading on developer retries (model sees its own prior output, not a rebuilt prompt)
+
 ---
 
 ## How to run a benchmark goal
@@ -37,7 +41,7 @@ A run **fails** if the final output shows `FAILED` after exhausting all retries 
 | 9 | CSV manager (read, write, filter by column) | Medium | ✅ Pass | 1 | Developer retry needed when tester writes wrong expected types (strings vs ints) |
 | 10 | Bank account (OOP, deposit/withdraw/transfer, ValueError on invalid ops) | Medium | ✅ Pass | 0 | — |
 | 11 | Inventory management (add/remove/update/search, JSON persistence, category field) | Medium | ✅ Pass | 0 | Goal must mention `category` as a product field; search functions need `filepath` param |
-| 12 | Markdown → HTML converter (h1-h3, bold, italic, code, unordered lists) | Hard | ❌ Fail | 2 | See known limitations |
+| 12 | Markdown → HTML converter (h1-h3, bold, italic, code, unordered lists) | Hard | ❌ Fail | 2 | Multi-turn threading improved retry 1 from 1/5 → 2/6 tests; stuck at 2/6 on retry 2. Confirmed 7b capability limit, not context truncation. |
 
 ---
 
@@ -47,8 +51,8 @@ A run **fails** if the final output shows `FAILED` after exhausting all retries 
 
 **Goal:** Markdown to HTML with unordered list support  
 **Symptom:** `- Item 1\n- Item 2` produces `<ul><li>Item 1</li></ul><ul><li>Item 2</li></ul>` instead of one `<ul>` wrapping both items  
-**Root cause:** `qwen2.5-coder:7b` consistently uses a per-line regex approach and cannot self-correct to a stateful line-grouping algorithm even after 3 developer retries with the full error diff  
-**Workaround:** Not currently fixable at 7b. Requires either a larger model (13b+) or rewriting the function manually after generation  
+**Root cause:** `qwen2.5-coder:7b` consistently uses a per-line regex approach and cannot self-correct to a stateful line-grouping algorithm even with full context (num_ctx=16384) and multi-turn retry threading. Retry 1 improved from 1/5 → 2/6 (threading helps), but the algorithm reasoning failure is a genuine 7b ceiling.  
+**Workaround:** Not fixable at 7b. Requires either a larger model (13b+) or rewriting the function manually after generation.  
 **Affects:** Any goal that requires grouping consecutive input lines into a single output block (e.g. table rows, multi-line code fences, paragraph detection)
 
 ---

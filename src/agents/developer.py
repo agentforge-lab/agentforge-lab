@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from src.llm.client import LLMClient, LLMResponse
-from src.llm.prompts import DEVELOPER_SYSTEM, DEVELOPER_RETRY_SUFFIX
+from src.llm.prompts import DEVELOPER_SYSTEM
 
 
 @dataclass
@@ -368,13 +368,15 @@ class DeveloperAgent:
     ) -> DeveloperResult:
         """
         Given a task description, call the LLM, parse edits, apply to disk.
-        Retries up to MAX_RETRIES times with error feedback. Escalates on failure.
+        Retries up to MAX_RETRIES times using multi-turn conversation threading:
+        the model sees its own prior output and the specific error, not a rebuilt prompt.
         """
         self._retry_count = 0
         self._last_error = ""
+        history: list[dict] | None = None
 
         while self._retry_count < self.MAX_RETRIES:
-            result = self._attempt(task, context or {})
+            result, history = self._attempt(task, context or {}, history)
             if result.success:
                 self.apply_edits(result.edits)
                 return result
@@ -396,18 +398,34 @@ class DeveloperAgent:
         """Same as execute() but does NOT write files to disk."""
         self._retry_count = 0
         self._last_error = ""
-        return self._attempt(task, context or {})
+        result, _ = self._attempt(task, context or {}, None)
+        return result
 
     # ── Internal ──────────────────────────────────────────────────────────
 
-    def _attempt(self, task: str, context: dict) -> DeveloperResult:
-        system = self._build_system_prompt()
-        user = self._build_user_prompt(task, context)
+    def _attempt(
+        self, task: str, context: dict, history: list[dict] | None
+    ) -> tuple[DeveloperResult, list[dict]]:
+        """
+        Single LLM call. On first attempt (history=None) builds a fresh [system, user]
+        pair. On retries, extends the existing conversation thread so the model sees its
+        own previous output and the specific error — not a rebuilt monolithic prompt.
+        Returns (result, updated_history).
+        """
+        if history is None:
+            messages: list[dict] = [
+                {"role": "system", "content": DEVELOPER_SYSTEM},
+                {"role": "user",   "content": self._build_user_prompt(task, context)},
+            ]
+        else:
+            messages = history + [{"role": "user", "content": self._build_retry_message()}]
 
         try:
-            response = self.llm.complete(system, user)
+            response = self.llm.chat(messages)
         except Exception as e:
-            return DeveloperResult(success=False, error=f"LLM call failed: {e}")
+            return DeveloperResult(success=False, error=f"LLM call failed: {e}"), messages
+
+        next_history = messages + [{"role": "assistant", "content": response.content}]
 
         edits, summary = _parse_edits(response.content)
 
@@ -416,7 +434,7 @@ class DeveloperAgent:
                 success=False,
                 error="No <agentforge_edits> block found in LLM response",
                 response=response,
-            )
+            ), next_history
 
         # Security validation on every edit before touching disk
         for edit in edits:
@@ -426,7 +444,7 @@ class DeveloperAgent:
                     success=False,
                     error=path_error,
                     response=response,
-                )
+                ), next_history
 
             # Secrets scan on generated content
             if edit.content:
@@ -440,7 +458,7 @@ class DeveloperAgent:
                             "Use os.environ.get('VAR_NAME') instead of hardcoded values."
                         ),
                         response=response,
-                    )
+                    ), next_history
 
         return DeveloperResult(
             success=True,
@@ -448,11 +466,10 @@ class DeveloperAgent:
             summary=summary,
             retry_count=self._retry_count,
             response=response,
-        )
+        ), next_history
 
-    def _build_system_prompt(self) -> str:
-        if self._retry_count == 0:
-            return DEVELOPER_SYSTEM
+    def _build_retry_message(self) -> str:
+        """Focused user turn injected into the conversation thread on each retry."""
         hint = "syntax and imports"
         if self._last_error and "secret" in self._last_error.lower():
             hint = "never hardcode credentials — use os.environ.get('VAR_NAME')"
@@ -462,10 +479,10 @@ class DeveloperAgent:
             hint = "file paths"
         elif self._last_error and "parse" in self._last_error.lower():
             hint = "the exact <agentforge_edits> output format"
-        return DEVELOPER_SYSTEM + DEVELOPER_RETRY_SUFFIX.format(
-            attempt=self._retry_count + 1,
-            error=self._last_error[:300],   # truncate long errors to save context
-            hint=hint,
+        return (
+            f"The previous attempt failed with this error:\n\n{self._last_error[:500]}\n\n"
+            f"Fix specifically the issue above ({hint}). "
+            f"Return all files in the same <agentforge_edits> format, correcting only what is broken."
         )
 
     def _build_user_prompt(self, task: str, context: dict) -> str:
