@@ -93,6 +93,35 @@ class AgentBundle:
     working_dir: Path = Path(".")
 
 
+# ── Goal classifier ────────────────────────────────────────────────────────
+
+# Phrases that signal analysis / reporting intent (no code to write)
+_ANALYSIS_PHRASES = {
+    "analyze", "analyse", "check if", "test if", "tell me", "show me",
+    "are the tests", "is it working", "does it work", "run the tests",
+    "run tests", "what does", "explain", "describe", "review the",
+    "report", "list the", "what are", "how does",
+}
+
+# Phrases that confirm code-writing intent (override analysis signal)
+_CODE_PHRASES = {
+    "build", "create", "add", "implement", "write", "make", "develop",
+    "update", "extend", "fix", "refactor", "convert", "generate", "modify",
+}
+
+
+def _is_analysis_only_goal(goal: str) -> bool:
+    """
+    Return True if the goal is purely asking for information / analysis
+    with no intent to write or modify code.
+    Goals that contain both analysis AND code phrases are treated as code tasks.
+    """
+    lower = goal.lower()
+    has_analysis = any(p in lower for p in _ANALYSIS_PHRASES)
+    has_code     = any(p in lower for p in _CODE_PHRASES)
+    return has_analysis and not has_code
+
+
 # ── Context helpers ────────────────────────────────────────────────────────
 
 _SKIP_DIRS = {".venv", "__pycache__", ".agentforge", ".git", "node_modules", "dist", "build"}
@@ -211,7 +240,33 @@ def make_planner_node(bundle: AgentBundle):
         goal = state["goal"]
         emit(E.NODE_ENTERED, "planner", task=goal)
 
-        plan = bundle.planner.plan(goal)
+        # Reject analysis-only goals early — the developer cannot write code for them
+        if _is_analysis_only_goal(goal):
+            emit(E.NODE_FAILED, "planner",
+                 error="Goal is analysis-only — no code to write",
+                 reason="analysis_only")
+            return {
+                "final_error": (
+                    "AgentForge writes code — it can't run tests and report results on its own.\n"
+                    "Try a code-writing goal instead, for example:\n"
+                    "  • 'Add input validation to calculator.py'\n"
+                    "  • 'Fix the failing test in calculator.py'\n"
+                    "  • 'Add a log function to the existing calculator'"
+                ),
+                "complete": True,
+                "session_log": _log(state, "planner: rejected — analysis-only goal"),
+            }
+
+        # If the working directory has existing source files, prepend them to the
+        # goal so the planner knows to edit rather than create from scratch.
+        existing = _collect_existing_files(bundle.working_dir, goal)
+        if existing:
+            file_list = ", ".join(existing.keys())
+            planner_goal = f"[Existing project files: {file_list}]\n\n{goal}"
+        else:
+            planner_goal = goal
+
+        plan = bundle.planner.plan(planner_goal)
         plan_json = plan.to_json()
 
         task_description = plan.developer_brief if plan.developer_brief else goal

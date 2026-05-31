@@ -1,15 +1,17 @@
 import { useState } from 'react'
 import { DecisionGraph } from './components/DecisionGraph.jsx'
+import { WorkingDir } from './components/WorkingDir.jsx'
 import { NodeDetail } from './components/NodeDetail.jsx'
 import { LLMCallLog } from './components/LLMCallLog.jsx'
 import { useAgentSocket } from './hooks/useAgentSocket.js'
 
 export default function App() {
-  const [goal, setGoal]       = useState('')
-  const [planData, setPlanData] = useState(null)   // plan returned by /api/plan
-  const [planning, setPlanning] = useState(false)  // waiting for /api/plan response
+  const [goal, setGoal]           = useState('')
+  const [planData, setPlanData]   = useState(null)
+  const [planning, setPlanning]   = useState(false)
   const [planError, setPlanError] = useState(null)
   const [selectedNode, setSelectedNode] = useState(null)
+  const [workingDir, setWorkingDir]     = useState(null)   // null = sandbox mode
   const { state, connect, disconnect } = useAgentSocket()
 
   const canPlan = goal.trim().length > 3 && !state.running && !planning
@@ -46,7 +48,11 @@ export default function App() {
   function handleApprove() {
     if (!planData) return
     setPlanData(null)
-    connect(goal.trim(), { autoApprove: true, maxRetries: 3 })
+    connect(goal.trim(), {
+      autoApprove: true,
+      maxRetries: 3,
+      workingDir: workingDir ?? '.',
+    })
   }
 
   function handleCancel() {
@@ -99,6 +105,13 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {/* ── Working directory ───────────────────────────────────────── */}
+      <WorkingDir
+        onProjectSet={path => setWorkingDir(path)}
+        onClear={() => setWorkingDir(null)}
+        disabled={running || planning}
+      />
 
       {/* ── Planning in progress ────────────────────────────────────── */}
       {planning && (

@@ -105,6 +105,22 @@ RIGHT — trivially testable, no monkeypatch needed:
 - Do NOT hardcode credentials, API keys, or secrets. Use `os.environ.get("VAR")` instead.
 - NEVER use `app.run(debug=True)` in Flask — use `app.run(debug=False)`. debug=True is a HIGH security vulnerability.
 
+## Dispatcher / router functions — CRITICAL
+
+If you write a function that dispatches to other functions (e.g. `calculate(a, op, b)`),
+ensure the call matches each function's actual signature. Unary functions (one argument)
+and binary functions (two arguments) must NOT be called with the same argument list.
+
+WRONG — crashes on unary ops:
+  def calculate(a, op, b=None):
+      return ops[op](a, b)          # square_root(9, None) → TypeError
+
+RIGHT — handles both:
+  def calculate(a, op, b=None):
+      if b is None:
+          return ops[op](a)         # unary: sqrt, abs, log
+      return ops[op](a, b)          # binary: add, multiply, power
+
 ## REST API status codes — use these exactly
 
 When building REST APIs, use correct HTTP status codes. Tests will assert these precisely:

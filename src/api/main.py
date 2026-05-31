@@ -111,6 +111,89 @@ async def plan_goal(req: PlanRequest):
     return result
 
 
+# ── Folder picker endpoint ────────────────────────────────────────────────
+
+@app.get("/api/pick-folder")
+async def pick_folder():
+    """
+    Open a native macOS folder-picker dialog on the server side (server and
+    browser are the same machine for a local tool) and return the chosen path.
+    Uses osascript (AppleScript) — always available on macOS, no dependencies.
+    Returns {"path": "/chosen/path"} or {"cancelled": true} if user dismissed.
+    """
+    import asyncio as _asyncio
+    import subprocess
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _open_dialog() -> dict:
+        script = 'POSIX path of (choose folder with prompt "Select your project folder")'
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True,
+                text=True,
+                timeout=120,   # wait up to 2 min for user to pick
+            )
+            if result.returncode == 0:
+                return {"path": result.stdout.strip()}
+            # User pressed Cancel — osascript exits with code 1
+            return {"cancelled": True}
+        except subprocess.TimeoutExpired:
+            return {"cancelled": True}
+        except FileNotFoundError:
+            return {"error": "osascript not found — folder picker only works on macOS"}
+        except Exception as e:
+            return {"error": str(e)}
+
+    loop = _asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        result = await loop.run_in_executor(ex, _open_dialog)
+    return result
+
+
+# ── Analyze endpoint ─────────────────────────────────────────────────────
+
+class AnalyzeRequest(BaseModel):
+    path: str
+
+
+@app.post("/api/analyze")
+async def analyze_project(req: AnalyzeRequest):
+    """
+    Scan an existing project folder and return a codebase summary.
+    Uses the Explainer Agent to produce a plain-English description of the project.
+    """
+    path = Path(req.path.strip()).expanduser().resolve()
+
+    if not path.exists():
+        return {"error": f"Path does not exist: {path}"}
+    if not path.is_dir():
+        return {"error": f"Not a directory: {path}"}
+
+    import asyncio as _asyncio
+    from concurrent.futures import ThreadPoolExecutor
+    from src.agents.explainer import ExplainerAgent
+    from src.orchestrator.graph import _collect_existing_files
+
+    def _run_analysis() -> dict:
+        files = _collect_existing_files(path, task="", max_files=10, max_chars_per_file=4000)
+        if not files:
+            return {"error": "No Python source files found in this directory"}
+
+        summary = ExplainerAgent().explain(files, goal="")
+        return {
+            "path": str(path),
+            "file_count": len(files),
+            "files": list(files.keys()),
+            "summary": summary,
+        }
+
+    loop = _asyncio.get_running_loop()
+    with ThreadPoolExecutor(max_workers=1) as ex:
+        result = await loop.run_in_executor(ex, _run_analysis)
+    return result
+
+
 # ── WebSocket endpoint ────────────────────────────────────────────────────
 
 @app.websocket("/ws/run")
