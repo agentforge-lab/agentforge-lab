@@ -233,7 +233,9 @@ def agent():
               help="Directory to run in (default: fresh temp dir).")
 @click.option("--model", default=None,
               help="Override the agent_loop model for this test.")
-def agent_test(working_dir, model):
+@click.option("--local", "use_local", is_flag=True, default=False,
+              help="Use best available local Ollama model (no API key needed).")
+def agent_test(working_dir, model, use_local):
     """
     Run a minimal end-to-end test of the agentic loop.
 
@@ -244,11 +246,13 @@ def agent_test(working_dir, model):
       3. Runs the security scan
       4. Commits the result
 
-    Use this to confirm your API key and model work before running
-    real goals. Takes ~30-60 seconds with Gemini Flash.
+    \b
+    No API key? Use a local model:
+      ollama pull llama3.1:8b
+      agentforge agent test --local
 
     \b
-    Setup:
+    Free API key (recommended):
       agentforge keys set gemini YOUR_KEY
       agentforge models set agent_loop gemini/gemini-1.5-flash
       agentforge agent test
@@ -262,14 +266,34 @@ def agent_test(working_dir, model):
     load_keys_to_env()
 
     cfg         = load_model_config()
-    agent_model = model or cfg.for_agent("agent_loop")
-    provider    = detect_provider(agent_model)
 
-    if provider and not has_key(provider):
-        click.echo(f"\n  ✗ No API key for '{provider}'.")
-        click.echo(f"    Run: agentforge keys set {provider} YOUR_KEY")
-        click.echo(f"    Free options: agentforge keys free\n")
-        sys.exit(1)
+    if use_local or model == "local":
+        # Pick best available local model that supports tool use
+        from src.llm.model_config import detect_ollama_models
+        from src.llm.keys import LOCAL_TOOL_USE_MODELS
+        available  = detect_ollama_models()
+        preferred  = ["llama3.1:8b", "qwen2.5:7b", "llama3.2:3b"]
+        local_pick = next((m for m in preferred if m in available), None)
+        if not local_pick and available:
+            local_pick = available[0]   # fallback to whatever is installed
+        if not local_pick:
+            click.echo("\n  ✗ No Ollama models found.")
+            click.echo("    Install one: ollama pull llama3.1:8b")
+            sys.exit(1)
+        agent_model = local_pick
+        click.echo(f"\n  Using local model: {agent_model}")
+        if local_pick not in LOCAL_TOOL_USE_MODELS:
+            click.echo(f"  ⚠  {local_pick} may not support tool use reliably.")
+            click.echo(f"     Recommended: ollama pull llama3.1:8b")
+    else:
+        agent_model = model or cfg.for_agent("agent_loop")
+        provider    = detect_provider(agent_model)
+        if provider and not has_key(provider):
+            click.echo(f"\n  ✗ No API key for '{provider}'.")
+            click.echo(f"    Run: agentforge keys set {provider} YOUR_KEY")
+            click.echo(f"    Free options: agentforge keys free")
+            click.echo(f"    No key? Try: agentforge agent test --local\n")
+            sys.exit(1)
 
     # Use a temp dir if none given
     if working_dir:
@@ -572,24 +596,43 @@ def keys_list():
 
 @keys.command("free")
 def keys_free():
-    """Show free model options — no payment required."""
-    from src.llm.keys import FREE_MODELS
-    click.echo("\n  Free models (get API key, no credit card needed):\n")
+    """Show all free model options — API and local."""
+    from src.llm.keys import FREE_MODELS, LOCAL_TOOL_USE_MODELS
+    click.echo()
+
+    click.echo("  ── Option 1: Local models via Ollama (no API key, completely free) ──\n")
+    click.echo("  These models support tool use (function calling) on your machine:\n")
+    for model, desc in LOCAL_TOOL_USE_MODELS.items():
+        click.echo(f"    ollama/{model}")
+        click.echo(f"      {desc}")
+    click.echo()
+    click.echo("  Setup:")
+    click.echo("    ollama pull llama3.1:8b")
+    click.echo("    agentforge models set agent_loop ollama/llama3.1:8b")
+    click.echo("    agentforge agent test")
+    click.echo()
+
+    click.echo("  ── Option 2: Free API models (key required, no credit card) ──\n")
     for model, desc in FREE_MODELS.items():
         click.echo(f"    {model}")
-        click.echo(f"      {desc}\n")
-    click.echo("  ── How to get started (recommended: Gemini Flash) ──")
+        click.echo(f"      {desc}")
     click.echo()
-    click.echo("  1. Get free Gemini key: https://aistudio.google.com → 'Get API key'")
-    click.echo("  2. Save it:             agentforge keys set gemini YOUR_KEY")
-    click.echo("  3. Set agent model:     agentforge models set agent_loop gemini/gemini-1.5-flash")
-    click.echo("  4. Run agentic mode:    agentforge run \"your goal\" --mode agent")
+    click.echo("  Recommended — Gemini Flash (1500 req/day, best tool use):")
+    click.echo("    1. Get key:  https://aistudio.google.com → 'Get API key'")
+    click.echo("    2. Save:     agentforge keys set gemini YOUR_KEY")
+    click.echo("    3. Use:      agentforge models set agent_loop gemini/gemini-1.5-flash")
     click.echo()
-    click.echo("  ── Groq alternative (very fast) ──")
+    click.echo("  Groq (very fast, free tier):")
+    click.echo("    1. Get key:  https://console.groq.com")
+    click.echo("    2. Save:     agentforge keys set groq YOUR_KEY")
+    click.echo("    3. Use:      agentforge models set agent_loop groq/llama-3.3-70b-versatile")
     click.echo()
-    click.echo("  1. Get free Groq key:   https://console.groq.com")
-    click.echo("  2. Save it:             agentforge keys set groq YOUR_KEY")
-    click.echo("  3. Set agent model:     agentforge models set agent_loop groq/llama-3.3-70b-versatile")
+    click.echo("  HuggingFace (rate limited ~few req/min):")
+    click.echo("    1. Get key:  https://huggingface.co/settings/tokens")
+    click.echo("    2. Save:     agentforge keys set huggingface YOUR_TOKEN")
+    click.echo("    3. Use:      agentforge models set agent_loop huggingface/meta-llama/Llama-3.2-3B-Instruct")
+    click.echo()
+    click.echo("  Test any setup: agentforge agent test")
 
 
 @keys.command("test")
@@ -603,12 +646,13 @@ def keys_test(provider):
         click.echo(f"\n  ✗ No key for '{provider}'. Run: agentforge keys set {provider} <key>")
         sys.exit(1)
     test_models = {
-        "anthropic":  "claude-haiku-4-5-20251001",
-        "openai":     "gpt-4o-mini",
-        "gemini":     "gemini/gemini-1.5-flash",
-        "groq":       "groq/llama-3.1-8b-instant",
-        "openrouter": "openrouter/auto",
-        "together":   "together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "anthropic":   "claude-haiku-4-5-20251001",
+        "openai":      "gpt-4o-mini",
+        "gemini":      "gemini/gemini-1.5-flash",
+        "groq":        "groq/llama-3.1-8b-instant",
+        "openrouter":  "openrouter/auto",
+        "together":    "together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1",
+        "huggingface": "huggingface/meta-llama/Llama-3.2-3B-Instruct",
     }
     model = test_models.get(provider)
     if not model:

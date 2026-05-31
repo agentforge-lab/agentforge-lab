@@ -27,36 +27,51 @@ _KEYS_FILE = Path.home() / ".agentforge" / "keys.json"
 
 # Maps provider name → environment variable LiteLLM reads
 ENV_MAP: dict[str, str] = {
-    "anthropic":  "ANTHROPIC_API_KEY",
-    "openai":     "OPENAI_API_KEY",
-    "gemini":     "GEMINI_API_KEY",
-    "groq":       "GROQ_API_KEY",
-    "openrouter": "OPENROUTER_API_KEY",
-    "together":   "TOGETHER_API_KEY",
+    "anthropic":    "ANTHROPIC_API_KEY",
+    "openai":       "OPENAI_API_KEY",
+    "gemini":       "GEMINI_API_KEY",
+    "groq":         "GROQ_API_KEY",
+    "openrouter":   "OPENROUTER_API_KEY",
+    "together":     "TOGETHER_API_KEY",
+    "huggingface":  "HUGGINGFACE_API_KEY",
 }
 
 # Model string prefixes → provider (for auto-detection)
+# None means local Ollama — no API key needed
 MODEL_PREFIX_MAP: dict[str, str] = {
-    "claude-":      "anthropic",
-    "anthropic/":   "anthropic",
-    "gpt-":         "openai",
-    "openai/":      "openai",
-    "o1":           "openai",
-    "o3":           "openai",
-    "gemini/":      "gemini",
-    "google/":      "gemini",
-    "groq/":        "groq",
-    "openrouter/":  "openrouter",
-    "together/":    "together",
+    "claude-":        "anthropic",
+    "anthropic/":     "anthropic",
+    "gpt-":           "openai",
+    "openai/":        "openai",
+    "o1":             "openai",
+    "o3":             "openai",
+    "gemini/":        "gemini",
+    "google/":        "gemini",
+    "groq/":          "groq",
+    "openrouter/":    "openrouter",
+    "together/":      "together",
+    "together_ai/":   "together",
+    "huggingface/":   "huggingface",
 }
 
-# Free models with notes — shown in `agentforge keys free`
+# Local Ollama models that reliably support tool use (function calling)
+# Tested on Apple Silicon. Pull with: ollama pull <model>
+LOCAL_TOOL_USE_MODELS: dict[str, str] = {
+    "llama3.1:8b":   "Meta Llama 3.1 8B — best local tool use, ~5GB VRAM",
+    "qwen2.5:7b":    "Qwen 2.5 7B — fast, good tool use, ~5GB VRAM",
+    "llama3.2:3b":   "Meta Llama 3.2 3B — lightweight, ~2GB VRAM",
+    "llama3.1:70b":  "Meta Llama 3.1 70B — strongest local, needs 32GB+ RAM",
+}
+
+# Free API models — shown in `agentforge keys free`
 FREE_MODELS: dict[str, str] = {
-    "gemini/gemini-1.5-flash":    "Google Gemini Flash — FREE (1500 req/day, tool use supported)",
-    "gemini/gemini-2.0-flash-exp":"Google Gemini 2.0 Flash Exp — FREE (experimental, latest)",
-    "groq/llama-3.3-70b-versatile":"Groq Llama 3.3 70B — FREE tier, strong reasoning",
-    "groq/llama-3.1-8b-instant":  "Groq Llama 3.1 8B Instant — FREE tier, very fast",
-    "groq/mixtral-8x7b-32768":    "Groq Mixtral 8x7B — FREE tier, good for code",
+    "gemini/gemini-1.5-flash":          "Google Gemini Flash — FREE (1500 req/day, tool use ✓)",
+    "gemini/gemini-2.0-flash-exp":      "Google Gemini 2.0 Flash — FREE (experimental, latest)",
+    "groq/llama-3.3-70b-versatile":     "Groq Llama 3.3 70B — FREE tier, strong reasoning",
+    "groq/llama-3.1-8b-instant":        "Groq Llama 3.1 8B — FREE tier, very fast",
+    "groq/mixtral-8x7b-32768":          "Groq Mixtral 8x7B — FREE tier, good for code",
+    "huggingface/meta-llama/Llama-3.2-3B-Instruct": "HuggingFace Llama 3.2 3B — FREE (rate limited)",
+    "huggingface/Qwen/Qwen2.5-7B-Instruct":         "HuggingFace Qwen 2.5 7B — FREE (rate limited)",
 }
 
 
