@@ -14,6 +14,7 @@ from pathlib import Path
 
 from src.agents.developer import DeveloperAgent
 from src.agents.executor import ExecutorAgent
+from src.agents.explainer import ExplainerAgent
 from src.agents.git_manager import GitManagerAgent
 from src.agents.planner import PlannerAgent
 from src.agents.security import SecurityAgent
@@ -138,12 +139,13 @@ class AgentForgeRunner:
     def _build_bundle(self, goal: str = "") -> AgentBundle:
         if self.llm is not None:
             # Explicit LLM passed in (e.g. from tests) — use it for all agents
-            planner_llm = developer_llm = tester_llm = self.llm
+            planner_llm = developer_llm = tester_llm = explainer_llm = self.llm
         else:
             cfg = load_model_config()
             planner_llm   = make_llm_client(cfg.for_agent("planner"))
             developer_llm = make_llm_client(cfg.for_agent("developer"))
             tester_llm    = make_llm_client(cfg.for_agent("tester"))
+            explainer_llm = make_llm_client(cfg.for_agent("developer"))  # reuse developer model
 
         return AgentBundle(
             planner=PlannerAgent(llm_client=planner_llm),
@@ -152,6 +154,7 @@ class AgentForgeRunner:
             tester=TesterAgent(llm=tester_llm, working_dir=self.working_dir),
             security=SecurityAgent(working_dir=self.working_dir),
             git_manager=GitManagerAgent(working_dir=self.working_dir),
+            explainer=ExplainerAgent(llm=explainer_llm),
             auto_approve=self.auto_approve,
             working_dir=self.working_dir,
         )

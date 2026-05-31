@@ -488,7 +488,7 @@ class DeveloperAgent:
     def _build_user_prompt(self, task: str, context: dict) -> str:
         parts: list[str] = []
         if context.get("project_context"):
-            parts.append(f"## Project context\n{context['project_context'][:1000]}")
+            parts.append(f"## Project context\n{context['project_context']}")
         if context.get("existing_files"):
             for path, content in context["existing_files"].items():
                 # Truncate large files to preserve context window

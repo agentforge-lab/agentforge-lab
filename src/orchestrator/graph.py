@@ -15,7 +15,9 @@ After max_retries: → END with final_error set.
 
 from __future__ import annotations
 
+import ast
 import json
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -86,6 +88,7 @@ class AgentBundle:
     tester: object
     security: object
     git_manager: object
+    explainer: object
     auto_approve: bool = False
     working_dir: Path = Path(".")
 
@@ -94,23 +97,66 @@ class AgentBundle:
 
 _SKIP_DIRS = {".venv", "__pycache__", ".agentforge", ".git", "node_modules", "dist", "build"}
 
+_CAMEL_RE = re.compile(r"([A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|[0-9]+)")
+
+
+def _tokenise(name: str) -> set[str]:
+    """Split an identifier into lowercase tokens (handles snake_case and CamelCase)."""
+    tokens: set[str] = set()
+    for part in name.split("_"):
+        for word in _CAMEL_RE.findall(part):
+            w = word.lower()
+            if len(w) > 1:   # skip single chars like 'a', 'i'
+                tokens.add(w)
+    return tokens
+
+
+def _extract_python_symbols(content: str) -> set[str]:
+    """
+    Parse a Python source file with ast and return a flat set of lowercase tokens
+    derived from: function names, class names, method names, docstring first lines,
+    and top-level imports. Falls back to empty set on SyntaxError.
+    """
+    tokens: set[str] = set()
+    try:
+        tree = ast.parse(content)
+    except SyntaxError:
+        return tokens
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            tokens.update(_tokenise(node.name))
+            doc = ast.get_docstring(node)
+            if doc:
+                # First line of docstring only — one-line summaries are most signal-dense
+                tokens.update(doc.splitlines()[0].lower().split())
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                tokens.add(alias.name.split(".")[0].lower())
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            tokens.add(node.module.split(".")[0].lower())
+
+    return tokens
+
 
 def _collect_existing_files(
     working_dir: Path,
     task: str,
-    max_files: int = 3,
-    max_chars_per_file: int = 3000,
+    max_files: int = 5,
+    max_chars_per_file: int = 4000,
 ) -> dict[str, str]:
     """
     Collect existing Python source files from working_dir to give the developer
     codebase awareness before writing. Returns {rel_path: truncated_content}.
-    Excludes: venv, cache, .agentforge, test files, __init__.py.
+
+    Scoring uses AST symbol extraction (function/class names split on snake_case
+    and CamelCase) rather than raw text keyword overlap, so files are ranked by
+    semantic relevance to the task even when terminology differs from identifiers.
     """
     candidates: list[tuple[str, str]] = []
 
     for py_file in working_dir.rglob("*.py"):
         rel = py_file.relative_to(working_dir)
-        # Skip any file whose path passes through an excluded directory
         if any(part in _SKIP_DIRS for part in rel.parts):
             continue
         name = py_file.name
@@ -129,13 +175,20 @@ def _collect_existing_files(
     if not candidates:
         return {}
 
-    # Score candidates by keyword overlap with the task
-    task_words = set(task.lower().split())
+    # Tokenise the task the same way we tokenise identifiers
+    task_tokens: set[str] = set()
+    for word in task.lower().split():
+        task_tokens.update(_tokenise(word))
+        task_tokens.add(word.lower())   # keep whole words too (e.g. "auth", "csv")
 
     def _score(item: tuple[str, str]) -> int:
         path, content = item
-        text_words = set((path + " " + content[:400]).lower().split())
-        return len(text_words & task_words)
+        # Symbols from AST parse
+        file_tokens = _extract_python_symbols(content)
+        # Add tokens from the file path itself (auth/user_manager.py → auth, user, manager)
+        for part in Path(path).parts:
+            file_tokens.update(_tokenise(part.replace(".", "_")))
+        return len(file_tokens & task_tokens)
 
     candidates.sort(key=_score, reverse=True)
     candidates = candidates[:max_files]
@@ -247,13 +300,20 @@ def make_developer_node(bundle: AgentBundle):
 
         context: dict = {}
 
-        project_ctx_path = bundle.working_dir / ".agentforge" / "project_context.md"
-        if project_ctx_path.exists():
-            context["project_context"] = project_ctx_path.read_text()
-
         existing = _collect_existing_files(bundle.working_dir, task)
         if existing:
             context["existing_files"] = existing
+            # On the first attempt, run the explainer to give the developer a
+            # structured codebase summary instead of (or in addition to) raw files.
+            if retry == 0:
+                summary = bundle.explainer.explain(existing, task)
+                if summary:
+                    context["project_context"] = summary
+        else:
+            # Fall back to a static project context file if present
+            project_ctx_path = bundle.working_dir / ".agentforge" / "project_context.md"
+            if project_ctx_path.exists():
+                context["project_context"] = project_ctx_path.read_text()
 
         retry_reason = ""
         if retry > 0:

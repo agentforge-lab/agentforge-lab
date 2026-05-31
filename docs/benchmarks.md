@@ -38,10 +38,11 @@ A run **fails** if the final output shows `FAILED` after exhausting all retries 
 | 6 | Unit converter (meters/km/miles, C/F/K) | Medium | ✅ Pass | 0 | Requires `pytest.approx(rel=1e-3)` in tests; tester prompt enforces this |
 | 7 | Statistics calculator (mean, median, mode, std dev) | Medium | ✅ Pass | 0 | — |
 | 8 | Todo list manager (add/remove/list, JSON persistence) | Medium | ✅ Pass | 0 | Developer must use optional `filepath` param; tester uses `tmp_path` directly |
-| 9 | CSV manager (read, write, filter by column) | Medium | ✅ Pass | 1 | Developer retry needed when tester writes wrong expected types (strings vs ints) |
+| 9 | CSV manager (read, write, filter by column) | Medium | ✅ Pass | 0 | Previously needed 1 retry; num_ctx fix resolved the type mismatch issue |
 | 10 | Bank account (OOP, deposit/withdraw/transfer, ValueError on invalid ops) | Medium | ✅ Pass | 0 | — |
 | 11 | Inventory management (add/remove/update/search, JSON persistence, category field) | Medium | ✅ Pass | 0 | Goal must mention `category` as a product field; search functions need `filepath` param |
-| 12 | Markdown → HTML converter (h1-h3, bold, italic, code, unordered lists) | Hard | ❌ Fail | 2 | Multi-turn threading improved retry 1 from 1/5 → 2/6 tests; stuck at 2/6 on retry 2. Confirmed 7b capability limit, not context truncation. |
+| 12 | Markdown → HTML converter (h1-h3, bold, italic, code, unordered lists) | Hard | ❌ Fail | 2 | Consistent 7b model limit. Non-deterministic across runs (retry 1 seen as 2/6 or 1/5). `<ul>` grouping algorithm requires stateful reasoning qwen 7b cannot reliably produce. |
+| 13 | REST API with user registration, login, and a protected endpoint | Hard | ✅ Pass | 0 | 5 consecutive 0-retry runs after HTTP status code rules added to developer prompt (409 for duplicate user, not 400) |
 
 ---
 
@@ -73,10 +74,11 @@ A run **fails** if the final output shows `FAILED` after exhausting all retries 
 ## Regression checklist (run before every public commit)
 
 ```bash
-# Quick smoke test — run these 3 in parallel
+# Quick smoke test — run these in parallel
 agentforge run "Build a Python calculator" --working-dir /tmp/smoke_calc --auto-approve
 agentforge run "Build a Python stack data structure with push, pop, peek, and is_empty" --working-dir /tmp/smoke_stack --auto-approve
 agentforge run "Build a Python todo list manager that can add, remove, and list tasks, saved to a JSON file" --working-dir /tmp/smoke_todo --auto-approve
+agentforge run "Build a REST API with user registration, login, and a protected endpoint with tests" --working-dir /tmp/smoke_api --auto-approve
 ```
 
-All 3 should pass with 0 retries. If any fail, do not push.
+All 4 should pass with 0 retries. If any fail, do not push. The REST API goal is the HN demo — it must be bulletproof.
