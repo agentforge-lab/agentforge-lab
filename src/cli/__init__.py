@@ -101,17 +101,44 @@ def cli():
               help="Root of the project being built.")
 @click.option("--stream/--no-stream", default=True, show_default=True,
               help="Stream node-by-node progress.")
-def run(goal, auto_approve, dry_run, max_retries, working_dir, stream):
-    """Plan, code, test, secure, and commit GOAL."""
+@click.option("--mode", default="pipeline",
+              type=click.Choice(["pipeline", "agent"]),
+              help="pipeline: fixed plan→code→test→commit graph (default). "
+                   "agent: truly agentic ReAct loop — model decides every step.")
+def run(goal, auto_approve, dry_run, max_retries, working_dir, stream, mode):
+    """Plan, code, test, secure, and commit GOAL.
+
+    \b
+    Pipeline mode (default): fixed 7-node graph, local models work.
+    Agent mode:              ReAct loop with tool use — needs an API key.
+                             Set one first: agentforge keys set gemini YOUR_KEY
+                             Then:          agentforge models set agent_loop gemini/gemini-1.5-flash
+    """
     try:
         wd = _working_dir(working_dir)
     except click.BadParameter as e:
         click.echo(str(e), err=True)
         sys.exit(1)
 
+    if mode == "agent" and not dry_run:
+        from src.llm.keys import load_keys_to_env, has_key
+        from src.llm.model_config import load_model_config
+        load_keys_to_env()
+        cfg = load_model_config()
+        agent_model = cfg.for_agent("agent_loop")
+        from src.llm.keys import detect_provider
+        provider = detect_provider(agent_model)
+        if provider and not has_key(provider):
+            click.echo(f"\n  ✗ Agent mode needs an API key for '{provider}'.")
+            click.echo(f"    Run: agentforge keys set {provider} YOUR_KEY")
+            click.echo(f"    Free options: agentforge keys free")
+            sys.exit(1)
+
     click.echo(f"\nAgentForge  ▸  {goal}")
     click.echo(f"  Working dir : {wd}")
-    click.echo(f"  Auto-approve: {auto_approve}")
+    click.echo(f"  Mode        : {mode}")
+    if mode == "pipeline":
+        click.echo(f"  Auto-approve: {auto_approve}")
     if dry_run:
         click.echo("  Dry-run mode: plan only (no writes, no commits)")
     click.echo()
@@ -124,15 +151,64 @@ def run(goal, auto_approve, dry_run, max_retries, working_dir, stream):
         working_dir=wd,
         auto_approve=auto_approve,
         max_retries=max_retries,
+        mode=mode,
     )
 
-    if stream:
+    if mode == "agent":
+        result = _stream_agent_run(runner, goal)
+    elif stream:
         result = _stream_run(runner, goal)
     else:
         result = runner.run(goal)
 
     click.echo(str(result))
     sys.exit(0 if result.success else 1)
+
+
+def _stream_agent_run(runner: AgentForgeRunner, goal: str):
+    """Stream agentic tool-call steps to the terminal."""
+    import asyncio
+    from src.agents.loop import AgentLoop
+    from src.llm.model_config import load_model_config, make_llm_client
+
+    cfg    = load_model_config()
+    model  = cfg.for_agent("agent_loop")
+    llm    = make_llm_client(model)
+    loop   = AgentLoop(llm=llm, working_dir=runner.working_dir, goal=goal)
+
+    click.echo(f"  Model: {model}\n")
+
+    async def _run():
+        async def on_event(event: dict):
+            t = event.get("type", "")
+            d = event.get("data", {})
+            if t == "agent_tool_call":
+                step    = d.get("step", "?")
+                tool    = d.get("tool", "")
+                success = d.get("success", True)
+                preview = d.get("output_preview", "")
+                marker  = "✓" if success else "✗"
+                click.echo(f"  [{step:>2}] {marker} {tool:<20} {preview[:80]}")
+            elif t == "agent_done":
+                click.echo(f"\n  ✓ Done — {d.get('summary', '')}")
+                if d.get("commit_sha"):
+                    click.echo(f"     Commit: {d['commit_sha']}  Branch: {d.get('branch', '')}")
+        return await loop.run(goal, send_event=on_event)
+
+    result = asyncio.run(_run())
+
+    from src.orchestrator.runner import RunResult
+    return RunResult(
+        success=result.success,
+        goal=goal,
+        commit_sha=result.commit_sha,
+        branch=result.branch,
+        tests_passed=result.tests_passed,
+        security_passed=result.security_passed,
+        retry_count=result.steps,
+        session_log=result.session_log,
+        error=result.error,
+    )
 
 
 def _do_dry_run(goal: str, wd: Path) -> None:
@@ -143,6 +219,120 @@ def _do_dry_run(goal: str, wd: Path) -> None:
     click.echo(f"  Branch     : {plan.branch_name}")
     click.echo(f"  Plan items : {len(plan.steps) if hasattr(plan, 'steps') else 'n/a'}")
     click.echo("\n  (Dry-run complete — no files written, no commit made)")
+
+
+# ── agent ──────────────────────────────────────────────────────────────────
+
+@cli.group()
+def agent():
+    """Commands for the truly agentic ReAct mode."""
+
+
+@agent.command("test")
+@click.option("--working-dir", default=None,
+              help="Directory to run in (default: fresh temp dir).")
+@click.option("--model", default=None,
+              help="Override the agent_loop model for this test.")
+def agent_test(working_dir, model):
+    """
+    Run a minimal end-to-end test of the agentic loop.
+
+    \b
+    What it does:
+      1. Writes a simple add() function to add.py
+      2. Runs the tests (which the agent writes itself)
+      3. Runs the security scan
+      4. Commits the result
+
+    Use this to confirm your API key and model work before running
+    real goals. Takes ~30-60 seconds with Gemini Flash.
+
+    \b
+    Setup:
+      agentforge keys set gemini YOUR_KEY
+      agentforge models set agent_loop gemini/gemini-1.5-flash
+      agentforge agent test
+    """
+    import asyncio
+    import tempfile
+    from src.llm.keys import load_keys_to_env, has_key, detect_provider
+    from src.llm.model_config import load_model_config, make_llm_client
+    from src.agents.loop import AgentLoop
+
+    load_keys_to_env()
+
+    cfg         = load_model_config()
+    agent_model = model or cfg.for_agent("agent_loop")
+    provider    = detect_provider(agent_model)
+
+    if provider and not has_key(provider):
+        click.echo(f"\n  ✗ No API key for '{provider}'.")
+        click.echo(f"    Run: agentforge keys set {provider} YOUR_KEY")
+        click.echo(f"    Free options: agentforge keys free\n")
+        sys.exit(1)
+
+    # Use a temp dir if none given
+    if working_dir:
+        wd = Path(working_dir).expanduser().resolve()
+        wd.mkdir(parents=True, exist_ok=True)
+    else:
+        _tmp = tempfile.mkdtemp(prefix="agentforge_test_")
+        wd   = Path(_tmp)
+
+    goal = (
+        "Write a Python file called add.py with a single function add(a, b) "
+        "that returns a + b. Write pytest tests for it. Run the tests to confirm "
+        "they pass, run the security scan, then commit."
+    )
+
+    click.echo(f"\n  AgentForge agent test")
+    click.echo(f"  Model      : {agent_model}")
+    click.echo(f"  Working dir: {wd}")
+    click.echo(f"  Goal       : {goal[:80]}...")
+    click.echo()
+
+    llm  = make_llm_client(agent_model)
+    loop = AgentLoop(llm=llm, working_dir=wd, goal=goal)
+    steps_seen: list[str] = []
+
+    async def _run():
+        async def on_event(event: dict):
+            t = event.get("type", "")
+            d = event.get("data", {})
+            if t == "agent_tool_call":
+                step    = d.get("step", "?")
+                tool    = d.get("tool", "")
+                success = d.get("success", True)
+                preview = (d.get("output_preview") or "")[:72]
+                marker  = "✓" if success else "✗"
+                line    = f"  [{step:>2}] {marker} {tool:<22} {preview}"
+                click.echo(line)
+                steps_seen.append(tool)
+            elif t == "agent_done":
+                click.echo(f"\n  ✓ Complete — {d.get('summary', '')}")
+                if d.get("commit_sha"):
+                    click.echo(f"     Commit : {d['commit_sha']}")
+                    click.echo(f"     Branch : {d.get('branch', '')}")
+        return await loop.run(goal, send_event=on_event)
+
+    result = asyncio.run(_run())
+
+    click.echo()
+    if result.success:
+        click.echo("  ✓ Agent test PASSED")
+        click.echo(f"    Steps taken : {result.steps}")
+        click.echo(f"    Tools used  : {', '.join(dict.fromkeys(steps_seen))}")
+        click.echo(f"    Working dir : {wd}")
+        click.echo()
+        click.echo("  The agentic loop is working. You can now run:")
+        click.echo(f'    agentforge run "your goal" --mode agent')
+    else:
+        click.echo(f"  ✗ Agent test FAILED: {result.error}")
+        click.echo()
+        click.echo("  Troubleshooting:")
+        click.echo("    agentforge keys test gemini       ← verify key works")
+        click.echo("    agentforge keys free              ← see all free options")
+        sys.exit(1)
 
 
 # ── serve ──────────────────────────────────────────────────────────────────
