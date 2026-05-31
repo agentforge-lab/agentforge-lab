@@ -61,19 +61,24 @@ class LLMClient:
         return bool(self._api_key) and self._api_key.startswith("sk-")
 
     def _resolve_model(self, force_api: bool) -> tuple[str, str | None]:
-        """Return (litellm_model_string, api_base_or_None)."""
-        if force_api and self.has_api_key:
-            return self.api_model, None
+        """
+        Return (litellm_model_string, api_base_or_None).
+        LiteLLM auto-detects provider from model string prefix:
+          claude-*  → Anthropic, gpt-* → OpenAI, gemini/* → Google,
+          groq/*    → Groq,     ollama/* → Ollama local
+        """
         if self.prefer_local and self.local_model:
             return f"ollama/{self.local_model}", self.OLLAMA_BASE
-        if self.has_api_key:
+        if self.api_model:
+            # Pass raw model string — LiteLLM handles all provider routing
             return self.api_model, None
-        # Last resort: try Ollama even if prefer_local is False
         if self.local_model:
             return f"ollama/{self.local_model}", self.OLLAMA_BASE
         raise RuntimeError(
-            "No LLM available: set ANTHROPIC_API_KEY in .env.local "
-            "or start Ollama with `ollama serve`"
+            "No LLM configured. Options:\n"
+            "  Local:  ollama serve && ollama pull qwen2.5-coder:7b\n"
+            "  Free:   agentforge keys set gemini <key>  (aistudio.google.com)\n"
+            "  Paid:   agentforge keys set anthropic <key>"
         )
 
     def complete(self, system: str, user: str, **kwargs) -> LLMResponse:

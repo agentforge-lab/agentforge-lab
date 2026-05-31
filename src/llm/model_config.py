@@ -29,29 +29,40 @@ _DEFAULT_MODEL = "qwen2.5-coder:1.5b"
 
 @dataclass
 class AgentModelConfig:
-    planner:   str = _DEFAULT_MODEL
-    developer: str = _DEFAULT_MODEL
-    tester:    str = _DEFAULT_MODEL
-    default:   str = _DEFAULT_MODEL
+    planner:    str = _DEFAULT_MODEL
+    developer:  str = _DEFAULT_MODEL
+    tester:     str = _DEFAULT_MODEL
+    agent_loop: str = ""              # model for agentic ReAct mode; falls back to developer
+    default:    str = _DEFAULT_MODEL
 
     def for_agent(self, agent: str) -> str:
         """Return the model for agent, falling back to default."""
+        if agent == "agent_loop":
+            return self.agent_loop or self.developer or self.default
         return getattr(self, agent, self.default) or self.default
 
     def to_dict(self) -> dict:
         return asdict(self)
 
     def display(self) -> str:
+        from src.llm.keys import detect_provider
         lines = ["Per-agent model configuration:"]
-        for agent in ("planner", "developer", "tester"):
+        for agent in ("planner", "developer", "tester", "agent_loop"):
             model = self.for_agent(agent)
-            tag = " (API)" if _is_api_model(model) else " (local)"
+            provider = detect_provider(model)
+            if provider is None:
+                tag = " (local Ollama)"
+            else:
+                tag = f" ({provider} API)"
+            if agent == "agent_loop" and not self.agent_loop:
+                tag += "  ← inherits from developer"
             lines.append(f"  {agent:<12}: {model}{tag}")
         return "\n".join(lines)
 
 
 def _is_api_model(model: str) -> bool:
-    return model.startswith("claude-") or model.startswith("anthropic/")
+    from src.llm.keys import detect_provider
+    return detect_provider(model) is not None
 
 
 def load_model_config(project_dir: Path | None = None) -> AgentModelConfig:
@@ -82,15 +93,31 @@ def save_model_config(config: AgentModelConfig, global_scope: bool = True) -> Pa
 
 def make_llm_client(model_str: str):
     """
-    Build an LLMClient for model_str.
-    Local Ollama models: pass as local_model (no ollama/ prefix needed).
-    Anthropic API models: pass as api_model with prefer_local=False.
+    Build an LLMClient for any model string.
+
+    Supported formats (LiteLLM routes automatically):
+      "qwen2.5-coder:7b"            → local Ollama (legacy, auto-prefixed)
+      "ollama/qwen2.5-coder:7b"     → local Ollama (explicit)
+      "claude-sonnet-4-6"           → Anthropic API
+      "gpt-4o"                      → OpenAI API
+      "gemini/gemini-1.5-flash"     → Google Gemini (free tier)
+      "groq/llama-3.1-8b-instant"   → Groq (free tier)
+      "openrouter/..."              → OpenRouter
+      "together/..."                → Together.ai
     """
     from src.llm.client import LLMClient
-    clean = model_str.replace("ollama/", "").strip()
-    if _is_api_model(clean):
-        return LLMClient(local_model="", api_model=clean, prefer_local=False)
-    return LLMClient(local_model=clean)
+    from src.llm.keys import detect_provider, load_keys_to_env
+
+    load_keys_to_env()   # ensure all saved keys are in env before any API call
+
+    provider = detect_provider(model_str)
+    if provider is None:
+        # Local Ollama — strip prefix if present
+        clean = model_str.replace("ollama/", "").strip()
+        return LLMClient(local_model=clean, api_model="", prefer_local=True)
+
+    # API model — pass raw string to LiteLLM, it handles routing
+    return LLMClient(local_model="", api_model=model_str, prefer_local=False)
 
 
 # ── Ollama detection ───────────────────────────────────────────────────────
@@ -153,6 +180,6 @@ def _project_config_path(project_dir: Path | None) -> Path:
 
 
 def _apply(config: AgentModelConfig, data: dict) -> None:
-    for field in ("planner", "developer", "tester", "default"):
+    for field in ("planner", "developer", "tester", "agent_loop", "default"):
         if data.get(field):
             setattr(config, field, data[field])

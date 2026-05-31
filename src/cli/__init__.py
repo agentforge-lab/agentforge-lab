@@ -264,7 +264,7 @@ def models_list():
 
 
 @models.command("set")
-@click.argument("agent", type=click.Choice(["planner", "developer", "tester", "default"]))
+@click.argument("agent", type=click.Choice(["planner", "developer", "tester", "agent_loop", "default"]))
 @click.argument("model")
 @click.option("--project", is_flag=True, default=False,
               help="Save to project (.agentforge/) instead of global (~/.agentforge/).")
@@ -325,3 +325,115 @@ def models_detect(save):
             click.echo(f"  Saved to: {path}")
         else:
             click.echo("  Not saved. Run with --save to skip the prompt.")
+
+
+# ── keys ───────────────────────────────────────────────────────────────────
+
+@cli.group()
+def keys():
+    """Manage API keys for all LLM providers (Anthropic, OpenAI, Gemini, Groq…)."""
+
+
+@keys.command("set")
+@click.argument("provider")
+@click.argument("key")
+def keys_set(provider, key):
+    """Save an API key. PROVIDER: anthropic, openai, gemini, groq, openrouter, together."""
+    from src.llm.keys import save_key, ENV_MAP
+    try:
+        save_key(provider, key)
+        click.echo(f"\n  ✓ {provider} key saved  →  {ENV_MAP[provider]}")
+    except ValueError as e:
+        click.echo(f"\n  ✗ {e}", err=True)
+        sys.exit(1)
+
+
+@keys.command("remove")
+@click.argument("provider")
+def keys_remove(provider):
+    """Remove a saved API key for PROVIDER."""
+    from src.llm.keys import remove_key
+    if remove_key(provider):
+        click.echo(f"\n  ✓ {provider} key removed")
+    else:
+        click.echo(f"\n  {provider} key not found")
+
+
+@keys.command("list")
+def keys_list():
+    """Show all saved API keys (masked) and their status."""
+    import os
+    from src.llm.keys import list_keys, ENV_MAP
+    click.echo("\n  API key status:\n")
+    saved = list_keys()
+    for provider, env_var in ENV_MAP.items():
+        if provider in saved:
+            click.echo(f"    {provider:<12} {saved[provider]}  (saved)")
+        elif os.environ.get(env_var):
+            val = os.environ[env_var]
+            masked = f"{val[:4]}...{val[-4:]}" if len(val) > 8 else "****"
+            click.echo(f"    {provider:<12} {masked}  (from environment)")
+        else:
+            click.echo(f"    {provider:<12} —  not set")
+    click.echo()
+    click.echo("  To add: agentforge keys set <provider> <key>")
+    click.echo("  Free:   agentforge keys free")
+
+
+@keys.command("free")
+def keys_free():
+    """Show free model options — no payment required."""
+    from src.llm.keys import FREE_MODELS
+    click.echo("\n  Free models (get API key, no credit card needed):\n")
+    for model, desc in FREE_MODELS.items():
+        click.echo(f"    {model}")
+        click.echo(f"      {desc}\n")
+    click.echo("  ── How to get started (recommended: Gemini Flash) ──")
+    click.echo()
+    click.echo("  1. Get free Gemini key: https://aistudio.google.com → 'Get API key'")
+    click.echo("  2. Save it:             agentforge keys set gemini YOUR_KEY")
+    click.echo("  3. Set agent model:     agentforge models set agent_loop gemini/gemini-1.5-flash")
+    click.echo("  4. Run agentic mode:    agentforge run \"your goal\" --mode agent")
+    click.echo()
+    click.echo("  ── Groq alternative (very fast) ──")
+    click.echo()
+    click.echo("  1. Get free Groq key:   https://console.groq.com")
+    click.echo("  2. Save it:             agentforge keys set groq YOUR_KEY")
+    click.echo("  3. Set agent model:     agentforge models set agent_loop groq/llama-3.3-70b-versatile")
+
+
+@keys.command("test")
+@click.argument("provider")
+def keys_test(provider):
+    """Send a test message to PROVIDER to verify the key works."""
+    import os
+    from src.llm.keys import load_keys_to_env, ENV_MAP, has_key
+    load_keys_to_env()
+    if not has_key(provider):
+        click.echo(f"\n  ✗ No key for '{provider}'. Run: agentforge keys set {provider} <key>")
+        sys.exit(1)
+    test_models = {
+        "anthropic":  "claude-haiku-4-5-20251001",
+        "openai":     "gpt-4o-mini",
+        "gemini":     "gemini/gemini-1.5-flash",
+        "groq":       "groq/llama-3.1-8b-instant",
+        "openrouter": "openrouter/auto",
+        "together":   "together_ai/mistralai/Mixtral-8x7B-Instruct-v0.1",
+    }
+    model = test_models.get(provider)
+    if not model:
+        click.echo(f"\n  ✗ No test model for '{provider}'")
+        sys.exit(1)
+    click.echo(f"\n  Testing {provider} ({model}) ...")
+    try:
+        from litellm import completion
+        resp = completion(
+            model=model,
+            messages=[{"role": "user", "content": "Reply with exactly: OK"}],
+            max_tokens=10,
+        )
+        answer = resp.choices[0].message.content.strip()
+        click.echo(f"  ✓ {provider} key works  —  response: {answer}")
+    except Exception as e:
+        click.echo(f"  ✗ {provider} key failed: {e}", err=True)
+        sys.exit(1)
